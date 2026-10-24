@@ -16,7 +16,7 @@ import {
 } from './lib/demo-store';
 
 type NavId = 'overview' | 'savings' | 'financing' | 'insurance' | 'motorcycles' | 'activity' | 'support' | 'settings';
-type ModalId = 'goal' | 'contribution' | 'loan' | 'motorcycle' | 'quote' | null;
+type ModalId = 'goal' | 'contribution' | 'loan' | 'motorcycle' | 'quote' | 'maintenance' | 'claim' | null;
 const navItems: { id: NavId; label: string; icon: typeof Home; section: string }[] = [
   { id: 'overview', label: 'Overview', icon: Home, section: 'WORKSPACE' },
   { id: 'savings', label: 'Savings goals', icon: Wallet, section: 'WORKSPACE' },
@@ -31,8 +31,11 @@ const fmt = (value: number) => new Intl.NumberFormat('en-RW', { style: 'currency
 const fmtDate = (value?: string | null) => value ? new Intl.DateTimeFormat('en-RW', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Not set';
 const saved = (rows: SavingsTransaction[]) => rows.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; quote_notes: string };
-const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', quote_notes: '' };
+type MaintenanceRecord = { id: string; motorcycle_id: string; service_date: string; description: string; amount: number; odometer_km: number | null; next_service_date: string | null; created_at: string };
+type InsuranceClaim = { id: string; policy_id: string; incident_date: string; description: string; status: string; created_at: string };
+type MotorcycleDocument = { id: string; motorcycle_id: string; document_type: string; storage_path: string; expires_on: string | null; verification_status: string; created_at: string };
+type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; quote_notes: string; service_date: string; service_description: string; service_amount: string; odometer_km: string; next_service_date: string; claim_policy_id: string; incident_date: string; incident_description: string };
+const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', quote_notes: '', service_date: new Date().toISOString().slice(0, 10), service_description: '', service_amount: '', odometer_km: '', next_service_date: '', claim_policy_id: '', incident_date: new Date().toISOString().slice(0, 10), incident_description: '' };
 
 export default function App() {
   const [activeNav, setActiveNav] = useState<NavId>('overview');
@@ -51,6 +54,9 @@ export default function App() {
   const [loans, setLoans] = useState<LoanApplication[]>(() => isSupabaseConfigured ? [] : readStore('motosave.loans', demoLoans));
   const [policies, setPolicies] = useState<Policy[]>(() => isSupabaseConfigured ? [] : readStore('motosave.policies', demoPolicies));
   const [premiums, setPremiums] = useState<Premium[]>(() => isSupabaseConfigured ? [] : readStore('motosave.premiums', demoPremiums));
+  const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>(() => isSupabaseConfigured ? [] : readStore('motosave.maintenance', []));
+  const [insuranceClaims, setInsuranceClaims] = useState<InsuranceClaim[]>(() => isSupabaseConfigured ? [] : readStore('motosave.claims', []));
+  const [motorcycleDocuments, setMotorcycleDocuments] = useState<MotorcycleDocument[]>(() => isSupabaseConfigured ? [] : readStore('motosave.documents', []));
   const [notificationsCount, setNotificationsCount] = useState(2);
 
   const notify = useCallback((message: string) => {
@@ -76,7 +82,7 @@ export default function App() {
   const loadLiveData = useCallback(async () => {
     if (!supabase || !session?.user.id) return;
     const userId = session.user.id;
-    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult] = await Promise.all([
+    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, maintenanceResult, claimsResult, documentsResult] = await Promise.all([
       supabase.from('profiles').select('full_name,role,preferred_language').eq('id', userId).maybeSingle(),
       supabase.from('savings_goals').select('*').order('created_at', { ascending: false }),
       supabase.from('savings_transactions').select('*').order('created_at', { ascending: false }).limit(100),
@@ -84,6 +90,9 @@ export default function App() {
       supabase.from('loan_applications').select('*').order('created_at', { ascending: false }),
       supabase.from('insurance_policies').select('id,policy_number,status,coverage_end,motorcycle_id').order('created_at', { ascending: false }),
       supabase.from('notifications').select('id,is_read').eq('is_read', false).limit(50),
+      supabase.from('maintenance_records').select('id,motorcycle_id,service_date,description,amount,odometer_km,next_service_date,created_at').order('service_date', { ascending: false }).limit(100),
+      supabase.from('insurance_claims').select('id,policy_id,incident_date,description,status,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('motorcycle_documents').select('id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at').order('created_at', { ascending: false }).limit(100),
     ]);
     if (profileResult.data) {
       setProfileName(profileResult.data.full_name || 'MotoSave rider');
@@ -94,6 +103,9 @@ export default function App() {
     if (motorcycleResult.data) setMotorcycles(motorcycleResult.data as Motorcycle[]);
     if (loanResult.data) setLoans(loanResult.data as LoanApplication[]);
     if (policyResult.data) setPolicies(policyResult.data as Policy[]);
+    if (maintenanceResult.data) setMaintenanceRecords(maintenanceResult.data as MaintenanceRecord[]);
+    if (claimsResult.data) setInsuranceClaims(claimsResult.data as InsuranceClaim[]);
+    if (documentsResult.data) setMotorcycleDocuments(documentsResult.data as MotorcycleDocument[]);
     if (notificationResult.data) setNotificationsCount(notificationResult.data.length);
     const policyIds = (policyResult.data || []).map((policy) => policy.id);
     if (policyIds.length) {
@@ -102,7 +114,7 @@ export default function App() {
     } else {
       setPremiums([]);
     }
-    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult].some((result) => result.error)) {
+    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, maintenanceResult, claimsResult, documentsResult].some((result) => result.error)) {
       notify('Some information could not be loaded. Check your Supabase migration and access policies.');
     }
   }, [session?.user.id, notify]);
@@ -122,8 +134,11 @@ export default function App() {
       localStorage.setItem('motosave.loans', JSON.stringify(loans));
       localStorage.setItem('motosave.policies', JSON.stringify(policies));
       localStorage.setItem('motosave.premiums', JSON.stringify(premiums));
+      localStorage.setItem('motosave.maintenance', JSON.stringify(maintenanceRecords));
+      localStorage.setItem('motosave.claims', JSON.stringify(insuranceClaims));
+      localStorage.setItem('motosave.documents', JSON.stringify(motorcycleDocuments));
     }
-  }, [demoWorkspace, goals, transactions, motorcycles, loans, policies, premiums]);
+  }, [demoWorkspace, goals, transactions, motorcycles, loans, policies, premiums, maintenanceRecords, insuranceClaims, motorcycleDocuments]);
 
   const totalTracked = useMemo(() => saved(transactions), [transactions]);
   const verifiedTotal = useMemo(() => transactions.filter((item) => item.verification_status === 'verified').reduce((sum, item) => sum + Number(item.amount || 0), 0), [transactions]);
@@ -180,6 +195,41 @@ export default function App() {
           setLoans((rows) => [{ ...payload, id: 'loan-' + Date.now(), status: 'submitted_demo', created_at: new Date().toISOString() }, ...rows]);
         }
         notify('Loan request submitted for workflow review. This is not loan approval.');
+      } else if (modal === 'maintenance') {
+        const payload = {
+          motorcycle_id: form.motorcycle_id,
+          service_date: form.service_date,
+          description: form.service_description.trim(),
+          amount: Number(form.service_amount || '0'),
+          odometer_km: form.odometer_km ? Number(form.odometer_km) : null,
+          next_service_date: form.next_service_date || null,
+        };
+        if (!payload.motorcycle_id) throw new Error('Choose a motorcycle for this service record.');
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(payload.service_date) || Number.isNaN(Date.parse(payload.service_date))) throw new Error('Enter a valid service date in YYYY-MM-DD format.');
+        if (payload.description.length < 3) throw new Error('Describe the maintenance or repair in at least three characters.');
+        if (!Number.isFinite(payload.amount) || payload.amount < 0) throw new Error('Service cost must be a non-negative number.');
+        if (payload.odometer_km !== null && (!Number.isInteger(payload.odometer_km) || payload.odometer_km < 0)) throw new Error('Odometer must be a non-negative whole number.');
+        if (supabase && session) {
+          const { data, error } = await supabase.from('maintenance_records').insert({ ...payload, owner_id: session.user.id }).select('*').single();
+          if (error) throw error;
+          setMaintenanceRecords((rows) => [data as MaintenanceRecord, ...rows]);
+        } else {
+          setMaintenanceRecords((rows) => [{ ...payload, id: 'service-' + Date.now(), created_at: new Date().toISOString() }, ...rows]);
+        }
+        notify('Maintenance record saved.');
+      } else if (modal === 'claim') {
+        const payload = { policy_id: form.claim_policy_id, incident_date: form.incident_date, description: form.incident_description.trim() };
+        if (!payload.policy_id) throw new Error('Choose the policy linked to this claim.');
+        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(payload.incident_date) || Number.isNaN(Date.parse(payload.incident_date))) throw new Error('Enter a valid incident date in YYYY-MM-DD format.');
+        if (payload.description.length < 10) throw new Error('Describe the incident in at least 10 characters.');
+        if (supabase && session) {
+          const { data, error } = await supabase.from('insurance_claims').insert({ ...payload, user_id: session.user.id }).select('*').single();
+          if (error) throw error;
+          setInsuranceClaims((rows) => [data as InsuranceClaim, ...rows]);
+        } else {
+          setInsuranceClaims((rows) => [{ ...payload, id: 'claim-' + Date.now(), status: 'submitted_demo', created_at: new Date().toISOString() }, ...rows]);
+        }
+        notify('Claim submitted for insurer review. It is not an acceptance or settlement decision.');
       } else if (modal === 'quote') {
         if (supabase && session) {
           const { error } = await supabase.from('insurance_quote_requests').insert({ user_id: session.user.id, motorcycle_id: form.motorcycle_id || null, product_id: null, notes: form.quote_notes.trim() || null });
@@ -192,6 +242,60 @@ export default function App() {
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Action could not be completed.');
     }
+  }
+
+  async function uploadMotorcycleDocument(file: File, motorcycleId: string, documentType: string, expiresOn: string) {
+    const allowedTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
+    if (!allowedTypes.has(file.type)) throw new Error('Choose a PDF, JPEG, PNG, or WebP file.');
+    if (file.size <= 0 || file.size > 10 * 1024 * 1024) throw new Error('File size must be between 1 byte and 10 MB.');
+    const bike = motorcycles.find((item) => item.id === motorcycleId);
+    if (!bike) throw new Error('Choose one of your motorcycles first.');
+
+    if (isSupabaseConfigured && (!supabase || !session)) throw new Error('Your session is not available. Sign in again before uploading private documents.');
+    if (supabase && session && !demoWorkspace) {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(-120);
+      const storagePath = session.user.id + '/' + motorcycleId + '/' + crypto.randomUUID() + '-' + safeName;
+      const { error: uploadError } = await supabase.storage.from('rider-documents').upload(storagePath, file, { contentType: file.type, upsert: false });
+      if (uploadError) throw uploadError;
+      const { data, error } = await supabase.from('motorcycle_documents').insert({
+        owner_id: session.user.id,
+        motorcycle_id: motorcycleId,
+        document_type: documentType,
+        storage_path: storagePath,
+        expires_on: expiresOn || null,
+      }).select('id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at').single();
+      if (error) {
+        await supabase.storage.from('rider-documents').remove([storagePath]);
+        throw error;
+      }
+      setMotorcycleDocuments((rows) => [data as MotorcycleDocument, ...rows]);
+      notify('Private document uploaded. Verification is still pending.');
+    } else {
+      const demoRow: MotorcycleDocument = {
+        id: 'demo-doc-' + Date.now(),
+        motorcycle_id: motorcycleId,
+        document_type: documentType,
+        storage_path: 'DEMO-ONLY/' + file.name,
+        expires_on: expiresOn || null,
+        verification_status: 'unverified',
+        created_at: new Date().toISOString(),
+      };
+      setMotorcycleDocuments((rows) => [demoRow, ...rows]);
+      notify('Demo document metadata saved locally. The file was not uploaded.');
+    }
+  }
+
+  async function openMotorcycleDocument(document: MotorcycleDocument) {
+    if (!supabase || !session || demoWorkspace || document.storage_path.startsWith('DEMO-ONLY/')) {
+      notify('This demo document has no uploaded file to open.');
+      return;
+    }
+    const { data, error } = await supabase.storage.from('rider-documents').createSignedUrl(document.storage_path, 60);
+    if (error || !data?.signedUrl) {
+      notify('Could not create a private document link. Check the storage policy.');
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   }
 
   async function signOut() { if (supabase) { await supabase.auth.signOut(); setSession(null); } }
@@ -243,15 +347,15 @@ export default function App() {
       <div className="page-content">
         <div className="page-heading">
           <div><span className="eyebrow">SATURDAY, OCTOBER 24, 2026</span><h1>{activeNav === 'overview' ? 'Good afternoon, ' + firstName : pageTitle}<span className="heading-period">{activeNav === 'overview' ? '.' : ''}</span></h1><p>{getSubtitle(activeNav)}</p></div>
-          <div className="heading-actions">{activeNav === 'savings' && <button className="button button-primary" onClick={() => openModal('goal')}><Plus size={17} /> New savings goal</button>}{activeNav === 'financing' && <button className="button button-primary" onClick={() => openModal('loan')}><Plus size={17} /> Apply for financing</button>}{activeNav === 'motorcycles' && <button className="button button-primary" onClick={() => openModal('motorcycle')}><Plus size={17} /> Add motorcycle</button>}{activeNav === 'insurance' && <button className="button button-primary" onClick={() => openModal('quote')}><Plus size={17} /> Request a quote</button>}</div>
+          <div className="heading-actions">{activeNav === 'savings' && <button className="button button-primary" onClick={() => openModal('goal')}><Plus size={17} /> New savings goal</button>}{activeNav === 'financing' && <button className="button button-primary" onClick={() => openModal('loan')}><Plus size={17} /> Apply for financing</button>}{activeNav === 'motorcycles' && <><button className="button button-secondary" onClick={() => openModal('maintenance')}><Wrench size={16} /> Log maintenance</button><button className="button button-primary" onClick={() => openModal('motorcycle')}><Plus size={17} /> Add motorcycle</button></>}{activeNav === 'insurance' && <><button className="button button-secondary" onClick={() => openModal('claim')}><FileCheck2 size={16} /> Submit a claim</button><button className="button button-primary" onClick={() => openModal('quote')}><Plus size={17} /> Request a quote</button></>}</div>
         </div>
 
         {demoWorkspace && <div className="demo-banner"><div className="demo-banner-icon"><Sparkles size={17} /></div><div><b>Demo workspace</b><span>Sample records are fictional and saved in this browser only. No money moves and no real insurance coverage is created.</span></div><span className="demo-tag">DEMO DATA</span></div>}
         {activeNav === 'overview' && <Overview goals={goals} transactions={transactions} motorcycles={motorcycles} loans={loans} policies={policies} upcomingPremium={upcomingPremium} totalTracked={totalTracked} verifiedTotal={verifiedTotal} progress={goalProgress} onCreateGoal={() => openModal('goal')} onAddContribution={() => openModal('contribution')} onApplyLoan={() => openModal('loan')} onQuote={() => openModal('quote')} onPayPremium={markPremiumPaid} onNavigate={setActiveNav} />}
         {activeNav === 'savings' && <SavingsPage goals={goals} transactions={transactions} progress={goalProgress} onCreateGoal={() => openModal('goal')} onAddContribution={() => openModal('contribution')} totalTracked={totalTracked} verifiedTotal={verifiedTotal} />}
         {activeNav === 'financing' && <FinancingPage loans={loans} onApply={() => openModal('loan')} />}
-        {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} onQuote={() => openModal('quote')} onPayPremium={markPremiumPaid} />}
-        {activeNav === 'motorcycles' && <MotorcyclesPage motorcycles={motorcycles} onAdd={() => openModal('motorcycle')} />}
+        {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} claims={insuranceClaims} onQuote={() => openModal('quote')} onClaim={() => openModal('claim')} onPayPremium={markPremiumPaid} />}
+        {activeNav === 'motorcycles' && <MotorcyclesPage motorcycles={motorcycles} maintenanceRecords={maintenanceRecords} documents={motorcycleDocuments} demo={demoWorkspace} onAdd={() => openModal('motorcycle')} onMaintenance={() => openModal('maintenance')} onUploadDocument={uploadMotorcycleDocument} onOpenDocument={openMotorcycleDocument} />}
         {activeNav === 'activity' && <ActivityPage transactions={transactions} loans={loans} premiums={premiums} searchQuery={searchQuery} />}
         {activeNav === 'support' && <SupportPage demo={demoWorkspace} onToast={notify} />}
         {activeNav === 'settings' && <SettingsPage profileName={profileName} profileRole={profileRole} onSave={(name) => { setProfileName(name); notify('Name updated for this session.'); }} demo={demoWorkspace} />}
@@ -259,7 +363,7 @@ export default function App() {
       <footer className="footer"><span>© 2026 MotoSave</span><span><ShieldCheck size={14} /> Your records, treated with care</span><span>Built for Rwanda <span className="footer-dot">•</span> RWF</span></footer>
     </main>
 
-    <AnimatePresence>{modal && <ActionModal kind={modal} form={form} setForm={setForm} onSubmit={submitModal} onClose={() => setModal(null)} goals={goals} motorcycles={motorcycles} />}</AnimatePresence>
+    <AnimatePresence>{modal && <ActionModal kind={modal} form={form} setForm={setForm} onSubmit={submitModal} onClose={() => setModal(null)} goals={goals} motorcycles={motorcycles} policies={policies} />}</AnimatePresence>
     <AnimatePresence>{toast && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }} className="toast"><CheckCircle2 size={18} /><span>{toast}</span><button onClick={() => setToast('')} aria-label="Dismiss message"><X size={15} /></button></motion.div>}</AnimatePresence>
   </div>;
 }
@@ -371,18 +475,66 @@ function FinancingPage({ loans, onApply }: { loans: LoanApplication[]; onApply: 
 }
 function ChecklistItem({ title, text }: { title: string; text: string }) { return <div className="checklist-item"><CheckCircle2 size={18} /><div><b>{title}</b><span>{text}</span></div></div>; }
 
-function InsurancePage({ policies, premiums, motorcycles, onQuote, onPayPremium }: { policies: Policy[]; premiums: Premium[]; motorcycles: Motorcycle[]; onQuote: () => void; onPayPremium: (premium: Premium) => void }) {
-  return <div className="section-stack"><div className="insurance-hero"><div className="insurance-hero-icon"><ShieldCheck size={39} /></div><div><span className="eyebrow">PROTECT YOUR LIVELIHOOD</span><h2>Insurance information, without the guesswork.</h2><p>Track policy records and upcoming premiums. Policy status must be confirmed by the responsible insurer.</p></div><button className="button button-primary" onClick={onQuote}><Plus size={16} /> Request a quote</button></div>
+function InsurancePage({ policies, premiums, motorcycles, claims, onQuote, onClaim, onPayPremium }: { policies: Policy[]; premiums: Premium[]; motorcycles: Motorcycle[]; claims: InsuranceClaim[]; onQuote: () => void; onClaim: () => void; onPayPremium: (premium: Premium) => void }) {
+  return <div className="section-stack"><div className="insurance-hero"><div className="insurance-hero-icon"><ShieldCheck size={39} /></div><div><span className="eyebrow">PROTECT YOUR LIVELIHOOD</span><h2>Insurance information, without the guesswork.</h2><p>Track policy records and upcoming premiums. Policy status must be confirmed by the responsible insurer.</p></div><div className="toolbar-actions"><button className="button button-secondary" onClick={onClaim}><FileCheck2 size={16} /> Submit a claim</button><button className="button button-primary" onClick={onQuote}><Plus size={16} /> Request a quote</button></div></div>
     <div className="info-callout"><AlertCircle size={19} /><div><b>A payment attempt is not active cover</b><span>Monthly installment schedules are shown only when the insurer supports them. Always confirm policy status and conditions with your insurer.</span></div></div>
     <div className="section-toolbar"><div><h3>Policy records <span className="count-pill">{policies.length}</span></h3><p>Connected records or explicitly labeled demo records.</p></div></div>
     <div className="policy-grid">{policies.map((policy) => <article className="policy-card" key={policy.id}><div className="policy-card-top"><span className="policy-brand"><ShieldCheck size={21} /></span><span className={'status-pill ' + (policy.status === 'active' ? 'success' : policy.status === 'demo_active' ? 'warning' : 'neutral')}>{policy.status.replaceAll('_', ' ')}</span></div><span className="eyebrow">POLICY REFERENCE</span><h3>{policy.policy_number || 'Pending partner reference'}</h3><div className="policy-detail"><span>Motorcycle</span><b>{motorcycles.find((bike) => bike.id === policy.motorcycle_id)?.registration_number || 'Not linked'}</b></div><div className="policy-detail"><span>Coverage end date</span><b>{fmtDate(policy.coverage_end)}</b></div><p className="small muted">Confirm coverage and all exclusions directly with the insurer.</p></article>)}</div>
     {!policies.length && <EmptyCard title="No policy records yet" description="Request a quote from a participating insurer and track the response here." action="Request a quote" onClick={onQuote} />}
     <section className="panel table-panel"><div className="panel-heading"><div><h3>Premium payment schedule</h3><p>Use the insurer's supported payment arrangement and official channel.</p></div><CalendarDays size={18} className="subtle-icon" /></div><div className="table-scroll"><table><thead><tr><th>Policy</th><th>Due date</th><th>Status</th><th className="right">Installment</th><th className="right">Action</th></tr></thead><tbody>{premiums.map((premium) => <tr key={premium.id}><td><b>{policies.find((policy) => policy.id === premium.policy_id)?.policy_number || 'Policy'}</b><small>Premium installment</small></td><td>{fmtDate(premium.due_date)}</td><td><span className={'status-pill ' + statusTone(premium.status)}>{premium.status.replaceAll('_', ' ')}</span></td><td className="right amount-cell">{fmt(Number(premium.amount_due))}</td><td className="right"><button className="table-action" onClick={() => onPayPremium(premium)}>{premium.status === 'simulated_confirmed' ? 'Demo paid' : 'Review payment'}</button></td></tr>)}</tbody></table></div>{!premiums.length && <div className="compact-empty">No premium installments were returned for your account.</div>}</section>
+    <section className="panel table-panel"><div className="panel-heading"><div><h3>Insurance claims <span className="count-pill">{claims.length}</span></h3><p>Claims are submitted to the insurer for assessment; status decisions are partner-controlled.</p></div><FileCheck2 size={18} className="subtle-icon" /></div><div className="table-scroll"><table><thead><tr><th>Policy</th><th>Incident date</th><th>Description</th><th>Status</th></tr></thead><tbody>{claims.map((claim) => <tr key={claim.id}><td><b>{policies.find((policy) => policy.id === claim.policy_id)?.policy_number || 'Policy record'}</b></td><td>{fmtDate(claim.incident_date)}</td><td>{claim.description}</td><td><span className={'status-pill ' + statusTone(claim.status)}>{claim.status.replaceAll('_', ' ')}</span></td></tr>)}</tbody></table></div>{!claims.length && <div className="compact-empty">No insurance claims are recorded for your account.</div>}<div className="panel-actions"><button className="button button-secondary" onClick={onClaim}><Plus size={15} /> Submit a claim</button></div></section>
   </div>;
 }
 
-function MotorcyclesPage({ motorcycles, onAdd }: { motorcycles: Motorcycle[]; onAdd: () => void }) {
-  return <div className="section-stack"><div className="section-toolbar"><div><h3>Your motorcycles <span className="count-pill">{motorcycles.length}</span></h3><p>Keep key details organized and easy to find.</p></div><button className="button button-primary" onClick={onAdd}><Plus size={16} /> Add motorcycle</button></div><div className="motorcycle-grid">{motorcycles.map((bike) => <article className="motorcycle-card" key={bike.id}><div className="motorcycle-image"><span className="motorcycle-image-circle"><Bike size={52} strokeWidth={1.2} /></span><span className="status-pill neutral">{bike.is_electric ? 'Electric' : 'Petrol'}</span></div><div className="motorcycle-card-body"><span className="eyebrow">REGISTRATION NUMBER</span><h3>{bike.registration_number}</h3><p>{bike.make} {bike.model}{bike.model_year ? ' · ' + bike.model_year : ''}</p><div className="motorcycle-card-footer"><span><FileText size={14} /> Document tracking</span><button onClick={onAdd}>Add another <ArrowRight size={14} /></button></div></div></article>)}</div>{!motorcycles.length && <EmptyCard title="Add your first motorcycle" description="Keep registration details, insurance references, and maintenance history linked to one record." action="Add motorcycle" onClick={onAdd} />}<section className="panel"><div className="panel-heading"><div><h3>Keep your records current</h3><p>Use reminders for documents and routine service.</p></div><Wrench size={19} className="subtle-icon" /></div><div className="checklist-grid"><ChecklistItem title="Registration documents" text="Keep document copies private and up to date." /><ChecklistItem title="Insurance expiry" text="Review the date with your insurer." /><ChecklistItem title="Maintenance history" text="Track service dates and repair budgets." /><ChecklistItem title="Safe document uploads" text="Only upload documents the workflow actually needs." /></div></section></div>;
+function MotorcyclesPage({ motorcycles, maintenanceRecords, documents, demo, onAdd, onMaintenance, onUploadDocument, onOpenDocument }: { motorcycles: Motorcycle[]; maintenanceRecords: MaintenanceRecord[]; documents: MotorcycleDocument[]; demo: boolean; onAdd: () => void; onMaintenance: () => void; onUploadDocument: (file: File, motorcycleId: string, documentType: string, expiresOn: string) => Promise<void>; onOpenDocument: (document: MotorcycleDocument) => void }) {
+  return <div className="section-stack"><div className="section-toolbar"><div><h3>Your motorcycles <span className="count-pill">{motorcycles.length}</span></h3><p>Keep key details organized and easy to find.</p></div><div className="toolbar-actions"><button className="button button-secondary" onClick={onMaintenance}><Wrench size={15} /> Log maintenance</button><button className="button button-primary" onClick={onAdd}><Plus size={16} /> Add motorcycle</button></div></div><div className="motorcycle-grid">{motorcycles.map((bike) => <article className="motorcycle-card" key={bike.id}><div className="motorcycle-image"><span className="motorcycle-image-circle"><Bike size={52} strokeWidth={1.2} /></span><span className="status-pill neutral">{bike.is_electric ? 'Electric' : 'Petrol'}</span></div><div className="motorcycle-card-body"><span className="eyebrow">REGISTRATION NUMBER</span><h3>{bike.registration_number}</h3><p>{bike.make} {bike.model}{bike.model_year ? ' · ' + bike.model_year : ''}</p><div className="motorcycle-card-footer"><span><FileText size={14} /> Document tracking</span><button onClick={onAdd}>Add another <ArrowRight size={14} /></button></div></div></article>)}</div>{!motorcycles.length && <EmptyCard title="Add your first motorcycle" description="Keep registration details, insurance references, and maintenance history linked to one record." action="Add motorcycle" onClick={onAdd} />}<section className="panel"><div className="panel-heading"><div><h3>Keep your records current</h3><p>Use reminders for documents and routine service.</p></div><Wrench size={19} className="subtle-icon" /></div><div className="checklist-grid"><ChecklistItem title="Registration documents" text="Keep document copies private and up to date." /><ChecklistItem title="Insurance expiry" text="Review the date with your insurer." /><ChecklistItem title="Maintenance history" text="Track service dates and repair budgets." /><ChecklistItem title="Safe document uploads" text="Only upload documents the workflow actually needs." /></div></section><MotorcycleDocumentsPanel motorcycles={motorcycles} documents={documents} demo={demo} onUpload={onUploadDocument} onOpen={onOpenDocument} />
+    <section className="panel table-panel"><div className="panel-heading"><div><h3>Maintenance history <span className="count-pill">{maintenanceRecords.length}</span></h3><p>Keep repair costs and upcoming service reminders connected to each motorcycle.</p></div><Wrench size={18} className="subtle-icon" /></div><div className="table-scroll"><table><thead><tr><th>Motorcycle</th><th>Service date</th><th>Description</th><th>Next service</th><th className="right">Cost</th></tr></thead><tbody>{maintenanceRecords.map((record) => <tr key={record.id}><td><b>{motorcycles.find((bike) => bike.id === record.motorcycle_id)?.registration_number || 'Motorcycle'}</b></td><td>{fmtDate(record.service_date)}</td><td>{record.description}{record.odometer_km ? <small>Odometer: {Number(record.odometer_km).toLocaleString()} km</small> : null}</td><td>{fmtDate(record.next_service_date)}</td><td className="right amount-cell">{fmt(Number(record.amount))}</td></tr>)}</tbody></table></div>{!maintenanceRecords.length && <div className="compact-empty">No maintenance records yet. Log a service or repair to get started.</div>}<div className="panel-actions"><button className="button button-secondary" onClick={onMaintenance}><Plus size={15} /> Log maintenance</button></div></section></div>;
+}
+
+function MotorcycleDocumentsPanel({ motorcycles, documents, demo, onUpload, onOpen }: { motorcycles: Motorcycle[]; documents: MotorcycleDocument[]; demo: boolean; onUpload: (file: File, motorcycleId: string, documentType: string, expiresOn: string) => Promise<void>; onOpen: (document: MotorcycleDocument) => void }) {
+  const [motorcycleId, setMotorcycleId] = useState('');
+  const [documentType, setDocumentType] = useState('registration');
+  const [expiresOn, setExpiresOn] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
+  const selectedBike = motorcycles.find((bike) => bike.id === motorcycleId);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError('');
+    if (!selectedBike) { setError('Select one of your motorcycles.'); return; }
+    if (!file) { setError('Choose a document file first.'); return; }
+    setUploading(true);
+    try {
+      await onUpload(file, motorcycleId, documentType, expiresOn);
+      setFile(null); setExpiresOn('');
+      const input = document.getElementById('motosave-document-file') as HTMLInputElement | null;
+      if (input) input.value = '';
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The document could not be uploaded.');
+    } finally { setUploading(false); }
+  }
+
+  return <section className="panel document-panel">
+    <div className="panel-heading"><div><h3>Motorcycle documents</h3><p>Private records for registration, insurance, inspection, and ownership.</p></div><FileText size={18} className="subtle-icon" /></div>
+    <div className="document-grid">
+      <form className="form-stack document-form" onSubmit={submit}>
+        <label>Motorcycle<select value={motorcycleId} onChange={(e) => setMotorcycleId(e.target.value)} required><option value="">Select a motorcycle</option>{motorcycles.map((bike) => <option key={bike.id} value={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label>
+        <label>Document type<select value={documentType} onChange={(e) => setDocumentType(e.target.value)}><option value="registration">Registration</option><option value="insurance">Insurance</option><option value="inspection">Inspection</option><option value="ownership">Ownership</option><option value="other">Other</option></select></label>
+        <label>Expiry date <span className="optional-label">Optional</span><input type="date" value={expiresOn} onChange={(e) => setExpiresOn(e.target.value)} /></label>
+        <label>Document file<input id="motosave-document-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" onChange={(e) => setFile(e.target.files?.[0] || null)} required /></label>
+        <p className="small muted document-note">PDF or image, up to 10 MB. Private uploads only. Do not upload unrelated personal information.</p>
+        {demo && <div className="inline-note"><AlertCircle size={15} /> Demo mode saves document metadata only. The selected file is not uploaded.</div>}
+        {error && <div className="alert alert-error">{error}</div>}
+        <button className="button button-primary" type="submit" disabled={uploading || !motorcycles.length}>{uploading ? 'Saving document…' : 'Save document record'} <ArrowRight size={15} /></button>
+      </form>
+      <div className="document-list">
+        {documents.map((document) => <div className="document-item" key={document.id}><span className="document-icon"><FileText size={18} /></span><span className="document-copy"><b>{document.document_type.replaceAll('_', ' ')}</b><small>{motorcycles.find((bike) => bike.id === document.motorcycle_id)?.registration_number || 'Motorcycle'} · {document.expires_on ? 'Expires ' + fmtDate(document.expires_on) : 'No expiry date'}</small><small>{document.verification_status.replaceAll('_', ' ')}</small></span><button className="table-action" type="button" onClick={() => onOpen(document)}>{demo ? 'Demo' : 'Open'}</button></div>)}
+        {!documents.length && <div className="compact-empty">No motorcycle documents saved yet.</div>}
+      </div>
+    </div>
+  </section>;
 }
 
 function ActivityPage({ transactions, loans, premiums, searchQuery }: { transactions: SavingsTransaction[]; loans: LoanApplication[]; premiums: Premium[]; searchQuery: string }) {
@@ -442,16 +594,18 @@ function EmptyCard({ title, description, action, onClick }: { title: string; des
   return <div className="empty-card"><span className="empty-illustration"><Sparkles size={30} /></span><h3>{title}</h3><p>{description}</p><button className="button button-primary" onClick={onClick}>{action} <ArrowRight size={15} /></button></div>;
 }
 
-function ActionModal({ kind, form, setForm, onSubmit, onClose, goals, motorcycles }: { kind: Exclude<ModalId, null>; form: FormState; setForm: (form: FormState) => void; onSubmit: (e: FormEvent) => void; onClose: () => void; goals: Goal[]; motorcycles: Motorcycle[] }) {
+function ActionModal({ kind, form, setForm, onSubmit, onClose, goals, motorcycles, policies }: { kind: Exclude<ModalId, null>; form: FormState; setForm: (form: FormState) => void; onSubmit: (e: FormEvent) => void; onClose: () => void; goals: Goal[]; motorcycles: Motorcycle[]; policies: Policy[] }) {
   const update = (key: keyof FormState, value: string) => setForm({ ...form, [key]: value });
-  const titles: Record<Exclude<ModalId, null>, string> = { goal: 'Create a savings goal', contribution: 'Record a contribution', loan: 'Start a financing request', motorcycle: 'Add a motorcycle', quote: 'Request an insurance quote' };
+  const titles: Record<Exclude<ModalId, null>, string> = { goal: 'Create a savings goal', contribution: 'Record a contribution', loan: 'Start a financing request', motorcycle: 'Add a motorcycle', quote: 'Request an insurance quote', maintenance: 'Log motorcycle maintenance', claim: 'Submit an insurance claim' };
   return <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><motion.div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" initial={{ opacity: 0, y: 16, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12 }} transition={{ duration: 0.18 }}><div className="modal-heading"><div><span className="eyebrow">MOTOSAVE WORKSPACE</span><h2 id="modal-title">{titles[kind]}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><form className="form-stack modal-form" onSubmit={onSubmit}>
     {kind === 'goal' && <><label>Goal name<input autoFocus value={form.title} onChange={(e) => update('title', e.target.value)} required minLength={2} placeholder="e.g. Emergency reserve" /></label><div className="form-row"><label>Target amount (RWF)<input type="number" min="1" step="1" value={form.target_amount} onChange={(e) => update('target_amount', e.target.value)} required placeholder="500000" /></label><label>Target date<input type="date" value={form.target_date} onChange={(e) => update('target_date', e.target.value)} /></label></div><div className="form-row"><label>Goal purpose<select value={form.purpose} onChange={(e) => update('purpose', e.target.value)}><option value="emergency">Emergency reserve</option><option value="maintenance">Motorcycle maintenance</option><option value="ownership">Motorcycle ownership</option><option value="insurance">Insurance premium</option><option value="business">Business growth</option><option value="custom">Other goal</option></select></label><label>Contribution plan<select value={form.frequency} onChange={(e) => update('frequency', e.target.value)}><option value="flexible">Flexible</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label></div></>}
     {kind === 'contribution' && <><label>Goal<select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)}><option value="">General contribution</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><label>Amount (RWF)<input type="number" min="1" step="1" autoFocus value={form.amount} onChange={(e) => update('amount', e.target.value)} required placeholder="15000" /></label><label>Note<input value={form.note} onChange={(e) => update('note', e.target.value)} placeholder="Optional reminder for yourself" /></label><div className="inline-note"><AlertCircle size={16} /> This is a manual planning record. It does not prove money was deposited.</div></>}
     {kind === 'motorcycle' && <><label>Registration number<input autoFocus value={form.registration_number} onChange={(e) => update('registration_number', e.target.value)} required placeholder="RAA 123 A" /></label><div className="form-row"><label>Make<input value={form.make} onChange={(e) => update('make', e.target.value)} required placeholder="TVS" /></label><label>Model<input value={form.model} onChange={(e) => update('model', e.target.value)} required placeholder="HLX 125" /></label></div><label>Model year <span className="optional-label">Optional</span><input type="number" min="1980" max={new Date().getFullYear() + 1} value={form.year} onChange={(e) => update('year', e.target.value)} placeholder="2023" /></label></>}
     {kind === 'loan' && <><label>Financing purpose<select value={form.loan_purpose} onChange={(e) => update('loan_purpose', e.target.value)}><option value="motorcycle_purchase">Motorcycle purchase</option><option value="electric_motorcycle">Electric motorcycle</option><option value="motorcycle_maintenance">Motorcycle maintenance</option><option value="business_expansion">Business expansion</option><option value="emergency">Emergency financing</option><option value="other">Other permitted purpose</option></select></label><div className="form-row"><label>Amount requested (RWF)<input type="number" min="1" step="1" autoFocus value={form.requested_amount} onChange={(e) => update('requested_amount', e.target.value)} required placeholder="350000" /></label><label>Term (months)<select value={form.term_months} onChange={(e) => update('term_months', e.target.value)}>{[3,6,9,12,18,24,36,48,60].map((n) => <option value={n} key={n}>{n} months</option>)}</select></label></div><label>Additional context <span className="optional-label">Optional</span><textarea rows={3} value={form.note} onChange={(e) => update('note', e.target.value)} placeholder="Describe what the financing is for." /></label><div className="inline-note"><ShieldAlert size={16} /> Submitting a request is not approval. A partner lender must assess the application and issue the real terms.</div></>}
     {kind === 'quote' && <><label>Motorcycle <span className="optional-label">Optional</span><select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)}><option value="">Choose later / not linked</option>{motorcycles.map((bike) => <option value={bike.id} key={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label><label>Anything the insurer should know? <span className="optional-label">Optional</span><textarea rows={4} value={form.quote_notes} onChange={(e) => update('quote_notes', e.target.value)} placeholder="Share only details required to request a quote." /></label><div className="inline-note"><ShieldCheck size={16} /> A quote request is not a policy. The insurer must provide terms and confirm any coverage.</div></>}
-    <div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>Cancel</button><button className="button button-primary" type="submit">{kind === 'goal' ? 'Create goal' : kind === 'contribution' ? 'Record entry' : kind === 'motorcycle' ? 'Save motorcycle' : kind === 'loan' ? 'Submit request' : 'Send quote request'} <ArrowRight size={15} /></button></div>
+    {kind === 'maintenance' && <><label>Motorcycle<select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)} required><option value="">Select a motorcycle</option>{motorcycles.map((bike) => <option key={bike.id} value={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label><div className="form-row"><label>Service date<input type="date" value={form.service_date} onChange={(e) => update('service_date', e.target.value)} required /></label><label>Cost (RWF)<input type="number" min="0" step="1" value={form.service_amount} onChange={(e) => update('service_amount', e.target.value)} placeholder="0" /></label></div><label>Service or repair description<textarea rows={3} value={form.service_description} onChange={(e) => update('service_description', e.target.value)} minLength={3} maxLength={1000} required placeholder="e.g. oil change, brake pads, tire repair" /></label><div className="form-row"><label>Odometer (km) <span className="optional-label">Optional</span><input type="number" min="0" step="1" value={form.odometer_km} onChange={(e) => update('odometer_km', e.target.value)} placeholder="45000" /></label><label>Next service date <span className="optional-label">Optional</span><input type="date" value={form.next_service_date} onChange={(e) => update('next_service_date', e.target.value)} /></label></div></>}
+    {kind === 'claim' && <><label>Policy record<select value={form.claim_policy_id} onChange={(e) => update('claim_policy_id', e.target.value)} required><option value="">Select a policy</option>{policies.map((policy) => <option key={policy.id} value={policy.id}>{policy.policy_number || policy.status} · {policy.status.replaceAll('_', ' ')}</option>)}</select></label><label>Incident date<input type="date" value={form.incident_date} onChange={(e) => update('incident_date', e.target.value)} required /></label><label>Describe the incident<textarea rows={4} value={form.incident_description} onChange={(e) => update('incident_description', e.target.value)} minLength={10} maxLength={5000} required placeholder="Describe when it happened and what occurred. Do not include unnecessary sensitive information." /></label><div className="inline-note"><ShieldAlert size={16} /> The insurer evaluates claims and decides coverage. This request is not a guarantee of acceptance or payment.</div></>}
+    <div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>Cancel</button><button className="button button-primary" type="submit">{kind === 'goal' ? 'Create goal' : kind === 'contribution' ? 'Record entry' : kind === 'motorcycle' ? 'Save motorcycle' : kind === 'loan' ? 'Submit request' : kind === 'maintenance' ? 'Save service record' : kind === 'claim' ? 'Submit claim' : 'Send quote request'} <ArrowRight size={15} /></button></div>
   </form></motion.div></motion.div>;
 }
 
