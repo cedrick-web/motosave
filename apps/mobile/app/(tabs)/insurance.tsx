@@ -5,14 +5,20 @@ import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 
 type Policy = { id: string; policy_number: string | null; status: string; coverage_end: string | null };
 type Premium = { id: string; policy_id: string; amount_due: number; due_date: string; status: string };
+type Claim = { id: string; policy_id: string; incident_date: string; description: string; status: string; created_at: string };
 const currency = (value: number) => new Intl.NumberFormat('en-RW', { style: 'currency', currency: 'RWF', maximumFractionDigits: 0 }).format(value || 0);
 
 export default function InsuranceScreen() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [premiums, setPremiums] = useState<Premium[]>([]);
+  const [claims, setClaims] = useState<Claim[]>([]);
   const [notes, setNotes] = useState('');
+  const [selectedPolicyId, setSelectedPolicyId] = useState('');
+  const [incidentDate, setIncidentDate] = useState(new Date().toISOString().slice(0,10));
+  const [incidentDescription, setIncidentDescription] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [sendingClaim, setSendingClaim] = useState(false);
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return; }
@@ -21,9 +27,19 @@ export default function InsuranceScreen() {
     const nextPolicies = (policyData || []) as Policy[];
     setPolicies(nextPolicies);
     if (nextPolicies.length) {
-      const { data } = await supabase.from('insurance_premium_installments').select('id,policy_id,amount_due,due_date,status').in('policy_id', nextPolicies.map((policy) => policy.id)).order('due_date', { ascending: true });
-      setPremiums((data || []) as Premium[]);
-    } else setPremiums([]);
+      const ids = nextPolicies.map((policy) => policy.id);
+      const [premiumResult, claimResult] = await Promise.all([
+        supabase.from('insurance_premium_installments').select('id,policy_id,amount_due,due_date,status').in('policy_id', ids).order('due_date', { ascending: true }),
+        supabase.from('insurance_claims').select('id,policy_id,incident_date,description,status,created_at').in('policy_id', ids).order('created_at', { ascending: false }),
+      ]);
+      if (premiumResult.error) Alert.alert('Could not load premium schedule', premiumResult.error.message);
+      if (claimResult.error) Alert.alert('Could not load claims', claimResult.error.message);
+      setPremiums((premiumResult.data || []) as Premium[]);
+      setClaims((claimResult.data || []) as Claim[]);
+      if (!selectedPolicyId) setSelectedPolicyId(ids[0]);
+    } else {
+      setPremiums([]); setClaims([]);
+    }
     setLoading(false);
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -41,6 +57,28 @@ export default function InsuranceScreen() {
     finally { setSending(false); }
   }
 
+
+  async function submitClaim() {
+    if (!selectedPolicyId) { Alert.alert('Choose a policy', 'A claim must be linked to an insurer-issued policy record.'); return; }
+    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(incidentDate) || Number.isNaN(Date.parse(incidentDate))) { Alert.alert('Check the incident date', 'Enter the incident date in YYYY-MM-DD format.'); return; }
+    if (incidentDescription.trim().length < 10) { Alert.alert('Add more detail', 'Describe the incident in at least 10 characters.'); return; }
+    if (!isSupabaseConfigured) { Alert.alert('Connect Supabase', 'Claims need the shared Supabase backend.'); return; }
+    setSendingClaim(true);
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) throw new Error('Please sign in again.');
+      const { error } = await supabase.from('insurance_claims').insert({
+        user_id: auth.user.id, policy_id: selectedPolicyId, incident_date: incidentDate, description: incidentDescription.trim(),
+      });
+      if (error) throw error;
+      setIncidentDescription('');
+      await load();
+      Alert.alert('Claim submitted', 'Your claim has been recorded. The insurer controls assessment, acceptance, and settlement.');
+    } catch(error) {
+      Alert.alert('Could not submit claim', error instanceof Error ? error.message : 'Please try again.');
+    } finally { setSendingClaim(false); }
+  }
+
   return <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
     <View style={styles.hero}><View style={styles.heroIcon}><Ionicons name="shield-checkmark-outline" size={28} color="#2869DF" /></View><Text style={styles.kicker}>PROTECT YOUR WORK</Text><Text style={styles.title}>Insurance information, made easier to track.</Text><Text style={styles.subtitle}>See policy records and upcoming premium dates. An insurer must confirm actual coverage.</Text></View>
     <View style={styles.notice}><Ionicons name="alert-circle-outline" size={19} color="#A06B1B" /><Text style={styles.noticeText}>A payment attempt is not proof of cover. Monthly installments are supported only when allowed by the actual insurer and policy.</Text></View>
@@ -51,6 +89,15 @@ export default function InsuranceScreen() {
     <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>Premium schedule</Text><Text style={styles.count}>{premiums.length}</Text></View>
     {premiums.map((premium) => <View key={premium.id} style={styles.premiumCard}><View style={{ flex: 1 }}><Text style={styles.policyTitle}>{currency(Number(premium.amount_due))}</Text><Text style={styles.policyMeta}>Due {premium.due_date}</Text></View><View style={styles.status}><Text style={styles.statusText}>{premium.status.replaceAll('_',' ')}</Text></View></View>)}
     {!premiums.length && <Text style={styles.footerNote}>Premium schedules will appear only after a supported policy record and installment schedule are supplied by the insurer.</Text>}
+    <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>Submit an insurance claim</Text><Text style={styles.count}>{claims.length}</Text></View>
+    <View style={styles.formCard}><Text style={styles.formHint}>Only submit claims for an actual policy issued by the insurer. Submission does not mean the claim has been accepted.</Text>
+      <Text style={styles.label}>Policy record</Text><View style={styles.chips}>{policies.map((policy) => <Pressable key={policy.id} onPress={() => setSelectedPolicyId(policy.id)} style={[styles.chip,selectedPolicyId===policy.id&&styles.chipActive]}><Text style={[styles.chipText,selectedPolicyId===policy.id&&styles.chipTextActive]}>{policy.policy_number || policy.status}</Text></Pressable>)}</View>
+      <TextInput style={styles.input} value={incidentDate} onChangeText={setIncidentDate} placeholder="Incident date (YYYY-MM-DD)" placeholderTextColor="#95A2B6" maxLength={10}/>
+      <TextInput style={[styles.input,styles.claimDescription]} value={incidentDescription} onChangeText={setIncidentDescription} placeholder="Describe the incident and damage..." placeholderTextColor="#95A2B6" multiline maxLength={5000}/>
+      <Pressable style={[styles.button,sendingClaim&&{opacity:.6}]} onPress={submitClaim} disabled={sendingClaim}>{sendingClaim?<ActivityIndicator color="#fff"/>:<Text style={styles.buttonText}>Submit claim  →</Text>}</Pressable>
+    </View>
+    {claims.map(claim=><View key={claim.id} style={styles.policyCard}><Text style={styles.policyTitle}>Claim · {claim.incident_date}</Text><Text style={styles.policyMeta}>{policies.find(policy=>policy.id===claim.policy_id)?.policy_number || 'Policy'} · {claim.status.replaceAll('_',' ')}</Text><Text style={styles.claimText}>{claim.description}</Text></View>)}
+    {!claims.length&&<Text style={styles.footerNote}>No claims recorded for your policy records.</Text>}
     <Text style={styles.footerNote}>Real premium payments are not connected in this build. Use the insurer's official approved payment channel until a provider integration is implemented.</Text>
   </ScrollView>;
 }
@@ -64,9 +111,12 @@ const styles = StyleSheet.create({
   notice: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, backgroundColor: '#FFF5E3', padding: 12, borderRadius: 10, marginBottom: 16 },
   noticeText: { flex: 1, color: '#926E36', fontSize: 10, lineHeight: 15 },
   formCard: { padding: 15, borderRadius: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#E6ECF5', marginBottom: 24 },
+  formHint: { color: '#8996AB', fontSize: 10, lineHeight: 15, marginBottom: 12 },
   formTitle: { color: '#273A57', fontSize: 14, fontWeight: '800', marginBottom: 6 },
   formHint: { color: '#8996AB', fontSize: 10, lineHeight: 15, marginBottom: 12 },
   input: { minHeight: 44, borderWidth: 1, borderColor: '#DFE7F2', borderRadius: 10, paddingHorizontal: 12, color: '#283A56', backgroundColor: '#FBFCFE', fontSize: 11, marginBottom: 11 },
+  claimDescription: { minHeight: 100, paddingTop: 11, textAlignVertical: 'top' },
+  claimText: { color: '#7E8BA0', fontSize: 10, lineHeight: 15, marginTop: 9 },
   notes: { minHeight: 72, paddingTop: 11, textAlignVertical: 'top' },
   button: { minHeight: 45, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#2869DF' },
   buttonText: { color: '#fff', fontSize: 11, fontWeight: '800' },
