@@ -15,6 +15,7 @@ export default function TabLayout() {
     }}>
       <Tabs.Screen name="index" options={{ title: 'Home', tabBarIcon: ({ color, size }) => <Ionicons name="grid-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="savings" options={{ title: 'Savings', tabBarIcon: ({ color, size }) => <Ionicons name="wallet-outline" size={size} color={color} /> }} />
+      <Tabs.Screen name="motorcycles" options={{ title: 'Bikes', tabBarIcon: ({ color, size }) => <Ionicons name="bicycle-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="financing" options={{ title: 'Financing', tabBarIcon: ({ color, size }) => <Ionicons name="cash-outline" size={size} color={color} /> }} />
       <Tabs.Screen name="insurance" options={{ title: 'Insurance', tabBarIcon: ({ color, size }) => <Ionicons name="shield-checkmark-outline" size={size} color={color} /> }} />
     </Tabs>
