@@ -18,6 +18,11 @@ type SupportTicket = {
   id: string; subject: string; category: string; description: string; status: string;
   priority: string; assigned_to: string | null; created_at: string;
 };
+type PartnerOrganization = { id: string; legal_name: string; display_name: string; partner_type: string; public_contact: string | null; status: string; is_published: boolean; created_at: string };
+type PartnerMembership = { id: string; user_id: string; organization_id: string; partner_role: string; status: string; created_at: string };
+type AdminProfile = { id: string; full_name: string; phone: string | null; role: string; account_status: string; created_at: string };
+type AdminLoanProduct = { id: string; partner_id: string; name: string; description: string | null; purpose: string; min_amount: number | null; max_amount: number | null; min_term_months: number | null; max_term_months: number | null; is_published: boolean };
+type AdminInsuranceProduct = { id: string; partner_id: string; name: string; description: string | null; coverage_type: string; supports_monthly_payments: boolean; is_published: boolean };
 type Queue = {
   role: string;
   loan_applications?: LoanApplication[];
@@ -25,6 +30,11 @@ type Queue = {
   insurance_policies?: InsurancePolicy[];
   insurance_quote_requests?: InsuranceQuoteRequest[];
   support_tickets?: SupportTicket[];
+  partner_organizations?: PartnerOrganization[];
+  partner_memberships?: PartnerMembership[];
+  profiles?: AdminProfile[];
+  loan_products?: AdminLoanProduct[];
+  insurance_products?: AdminInsuranceProduct[];
 };
 
 const fmt = (value: number) => new Intl.NumberFormat('en-RW', { style: 'currency', currency: 'RWF', maximumFractionDigits: 0 }).format(Number(value) || 0);
@@ -205,6 +215,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     <div className="operations-reason"><label htmlFor="ops-reason">Audit note for the next action</label><textarea id="ops-reason" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Enter the factual reason for a status change, offer, claim decision, or support action." /><small>This note is required for each change. Use factual, concise language.</small></div>
     {error && <div className="alert alert-error"><AlertCircle size={15} /> {error}</div>}
     {loading && <div className="panel loading-panel"><RefreshCw size={18} className="spin-icon" /> Loading authorized queues…</div>}
+    {!loading && queue && queue.role === 'platform_admin' && <PartnerAdministration queue={queue} invoke={invoke} reload={load} onNotify={onNotify} reason={reason} />}
     {!loading && queue && <div className="operations-summary">
       <div className="operation-metric"><span>Authorized role</span><b>{queue.role.replaceAll('_',' ')}</b><small>Resolved from your protected profile</small></div>
       <div className="operation-metric"><span>Loan requests</span><b>{queue.loan_applications?.length || 0}</b><small>Visible within your authorized scope</small></div>
@@ -241,6 +252,201 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
 
     {!loading && queue && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.insurance_quote_requests?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
     <div className="small muted operations-footer"><Clock3 size={14}/> Every successful state change is written to the audit log. Server permissions remain authoritative even when this UI is modified.</div>
+  </div>;
+}
+
+function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
+  queue: Queue;
+  invoke: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  reload: () => Promise<void>;
+  onNotify: (message: string) => void;
+  reason: string;
+}) {
+  const [legalName, setLegalName] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [organizationType, setOrganizationType] = useState('lender');
+  const [publicContact, setPublicContact] = useState('');
+  const [creatingOrganization, setCreatingOrganization] = useState(false);
+  const [memberUserId, setMemberUserId] = useState('');
+  const [memberOrganizationId, setMemberOrganizationId] = useState('');
+  const [memberRole, setMemberRole] = useState('lender_officer');
+  const [internalUserId, setInternalUserId] = useState('');
+  const [internalRole, setInternalRole] = useState('support_agent');
+  const [assigningRole, setAssigningRole] = useState(false);
+  const [productType, setProductType] = useState('loan');
+  const [productOrganizationId, setProductOrganizationId] = useState('');
+  const [productName, setProductName] = useState('');
+  const [productDescription, setProductDescription] = useState('');
+  const [productPurpose, setProductPurpose] = useState('motorcycle_maintenance');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
+  const [minTerm, setMinTerm] = useState('3');
+  const [maxTerm, setMaxTerm] = useState('36');
+  const [coverageType, setCoverageType] = useState('motorcycle_third_party');
+  const [exclusions, setExclusions] = useState('');
+  const [premiumBasis, setPremiumBasis] = useState('quote_required');
+  const [monthlyPayments, setMonthlyPayments] = useState(false);
+  const [termsJson, setTermsJson] = useState('{"notes":"Confirm complete terms directly with the partner."}');
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [error, setError] = useState('');
+
+  const organizations = queue.partner_organizations || [];
+  const profiles = (queue.profiles || []).filter((profile) => profile.account_status === 'active');
+  const loanProducts = queue.loan_products || [];
+  const insuranceProducts = queue.insurance_products || [];
+  const selectedOrganization = organizations.find((org) => org.id === memberOrganizationId);
+  const memberRoles = selectedOrganization?.partner_type === 'lender' ? ['lender_officer']
+    : selectedOrganization?.partner_type === 'insurer' ? ['insurer_officer']
+    : selectedOrganization?.partner_type === 'cooperative' ? ['cooperative_officer'] : [];
+
+  async function runOperation(action: string, payload: Record<string, unknown>, message: string) {
+    if (reason.trim().length < 5) { setError('Enter a factual audit note above before making an administrative change.'); return; }
+    setError('');
+    try {
+      await invoke({ action, ...payload, reason: reason.trim() });
+      onNotify(message);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The administrative operation failed.');
+    }
+  }
+
+  async function createOrganization(event: FormEvent) {
+    event.preventDefault();
+    if (legalName.trim().length < 2 || displayName.trim().length < 2) { setError('Enter the full legal name and public display name.'); return; }
+    setCreatingOrganization(true); setError('');
+    try {
+      await invoke({
+        action: 'create_partner_organization',
+        legal_name: legalName.trim(),
+        display_name: displayName.trim(),
+        partner_type: organizationType,
+        public_contact: publicContact.trim() || null,
+        reason: reason.trim(),
+      });
+      setLegalName(''); setDisplayName(''); setPublicContact('');
+      onNotify('Partner organization created in pending-verification status.');
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The organization could not be created.');
+    } finally { setCreatingOrganization(false); }
+  }
+
+  async function assignMembership(event: FormEvent) {
+    event.preventDefault();
+    if (!memberUserId || !memberOrganizationId || !memberRole) { setError('Choose an active profile, organization, and matching partner role.'); return; }
+    await runOperation('assign_partner_membership', { user_id: memberUserId, organization_id: memberOrganizationId, partner_role: memberRole }, 'Partner membership assigned. If the organization is not verified, the membership stays pending.');
+  }
+
+  async function assignInternalRole(event: FormEvent) {
+    event.preventDefault();
+    if (!internalUserId) { setError('Choose a profile for the internal role.'); return; }
+    setAssigningRole(true);
+    try {
+      await runOperation('assign_internal_role', { user_id: internalUserId, role: internalRole }, 'Internal support/audit role updated.');
+    } finally { setAssigningRole(false); }
+  }
+
+  async function createProduct(event: FormEvent) {
+    event.preventDefault();
+    if (reason.trim().length < 5) { setError('Enter a factual audit note above before creating a product.'); return; }
+    if (!productOrganizationId || productName.trim().length < 2) { setError('Choose a verified partner organization and enter a product name.'); return; }
+    let parsedTerms: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(termsJson);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+      parsedTerms = parsed as Record<string, unknown>;
+    } catch { setError('Product terms must be a valid JSON object.'); return; }
+    setCreatingProduct(true); setError('');
+    try {
+      if (productType === 'loan') {
+        await invoke({
+          action: 'create_loan_product', partner_id: productOrganizationId, name: productName.trim(),
+          description: productDescription.trim() || null, purpose: productPurpose,
+          min_amount: minAmount ? Number(minAmount) : null, max_amount: maxAmount ? Number(maxAmount) : null,
+          min_term_months: minTerm ? Number(minTerm) : null, max_term_months: maxTerm ? Number(maxTerm) : null,
+          published_terms: parsedTerms, reason: reason.trim(),
+        });
+      } else {
+        await invoke({
+          action: 'create_insurance_product', partner_id: productOrganizationId, name: productName.trim(),
+          description: productDescription.trim() || null, coverage_type: coverageType,
+          exclusions: exclusions.trim() || null, premium_basis: premiumBasis,
+          supports_monthly_payments: monthlyPayments, terms: parsedTerms, reason: reason.trim(),
+        });
+      }
+      setProductName(''); setProductDescription('');
+      onNotify('Product created as an unpublished draft. A verified, published organization and platform-admin approval are required before riders can see it.');
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The product could not be created.');
+    } finally { setCreatingProduct(false); }
+  }
+
+  const orgName = (id: string) => organizations.find((org) => org.id === id)?.display_name || id.slice(0, 8) + '…';
+  return <div className="section-stack admin-workspace">
+    <div className="admin-workspace-heading"><div><span className="eyebrow">PLATFORM ADMINISTRATION</span><h2>Partners, users, and product catalog</h2><p>These tools affect which institutions and products can enter rider workflows. Verify the organization first. Published listings must be accurate and authorized.</p></div><span className="status-pill warning">Privileged controls</span></div>
+    {error && <div className="alert alert-error"><AlertCircle size={15}/>{error}</div>}
+
+    <section className="panel admin-panel">
+      <div className="panel-heading"><div><h3><BriefcaseBusiness size={17}/> Partner organizations <span className="count-pill">{organizations.length}</span></h3><p>New organizations start pending verification and are not visible in rider catalogs.</p></div></div>
+      <form className="admin-form-grid" onSubmit={createOrganization}>
+        <label>Legal name<input value={legalName} onChange={(e)=>setLegalName(e.target.value)} minLength={2} maxLength={200} required placeholder="Registered legal entity name"/></label>
+        <label>Public display name<input value={displayName} onChange={(e)=>setDisplayName(e.target.value)} minLength={2} maxLength={120} required placeholder="Name riders will recognize"/></label>
+        <label>Partner type<select value={organizationType} onChange={(e)=>setOrganizationType(e.target.value)}><option value="lender">Lender</option><option value="insurer">Insurer</option><option value="cooperative">Cooperative</option><option value="payment_provider">Payment provider</option><option value="service_provider">Service provider</option></select></label>
+        <label>Public contact <span className="optional-label">Optional</span><input value={publicContact} onChange={(e)=>setPublicContact(e.target.value)} maxLength={240} placeholder="Official contact or website"/></label>
+        <button className="button button-primary" disabled={creatingOrganization} type="submit">{creatingOrganization?'Creating…':'Create pending partner'} <ArrowRight size={15}/></button>
+      </form>
+      <div className="admin-record-list">{organizations.map(org=><article className="admin-record" key={org.id}><div className="admin-record-main"><b>{org.display_name}</b><span>{org.legal_name}</span><small>{org.partner_type.replaceAll('_',' ')} · {org.status.replaceAll('_',' ')} · {org.is_published?'publicly published':'not public'}</small><small>{org.public_contact || 'No public contact recorded'}</small></div><div className="admin-record-actions"><button className="button button-secondary" onClick={()=>void runOperation('review_partner_organization',{organization_id:org.id,status:'verified',is_published:false},'Partner verified; product listings remain unpublished.')}>Verify only</button><button className="button button-primary" onClick={()=>void runOperation('review_partner_organization',{organization_id:org.id,status:'verified',is_published:true},'Partner verified and published.')}>Verify & publish</button><button className="button button-quiet" onClick={()=>void runOperation('review_partner_organization',{organization_id:org.id,status:'suspended',is_published:false},'Partner suspended and its memberships disabled.')}>Suspend</button></div></article>)}
+        {!organizations.length&&<div className="compact-empty">No partner organizations registered yet.</div>}
+      </div>
+    </section>
+
+    <section className="panel admin-panel">
+      <div className="panel-heading"><div><h3><ShieldCheck size={17}/> Access and role assignment</h3><p>Partner roles are assigned to active profiles by a platform administrator. The UI never lets riders assign roles to themselves.</p></div></div>
+      <form className="admin-form-grid" onSubmit={assignMembership}>
+        <label>Active user profile<select value={memberUserId} onChange={(e)=>setMemberUserId(e.target.value)} required><option value="">Select user</option>{profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.full_name || 'Unnamed user'} · {profile.role} · {profile.id.slice(0,8)}…</option>)}</select></label>
+        <label>Organization<select value={memberOrganizationId} onChange={(e)=>{setMemberOrganizationId(e.target.value);const org=organizations.find(item=>item.id===e.target.value);setMemberRole(org?.partner_type==='lender'?'lender_officer':org?.partner_type==='insurer'?'insurer_officer':'cooperative_officer');}} required><option value="">Select organization</option>{organizations.filter(org=>['lender','insurer','cooperative'].includes(org.partner_type)).map(org=><option key={org.id} value={org.id}>{org.display_name} · {org.status}</option>)}</select></label>
+        <label>Partner role<select value={memberRole} onChange={(e)=>setMemberRole(e.target.value)} required>{memberRoles.map(role=><option key={role} value={role}>{role.replaceAll('_',' ')}</option>)}{!memberRoles.length&&<option value="lender_officer">Select a supported partner type first</option>}</select></label>
+        <button className="button button-primary" type="submit">Assign partner membership <ArrowRight size={15}/></button>
+      </form>
+      <div className="admin-record-list">{(queue.partner_memberships||[]).slice(0,30).map(member=><article className="admin-record compact-admin-record" key={member.id}><div className="admin-record-main"><b>{profiles.find(profile=>profile.id===member.user_id)?.full_name || member.user_id.slice(0,8)+'…'}</b><span>{orgName(member.organization_id)}</span><small>{member.partner_role.replaceAll('_',' ')} · {member.status}</small></div></article>)}</div>
+      <form className="admin-form-grid internal-role-form" onSubmit={assignInternalRole}>
+        <label>Internal staff profile<select value={internalUserId} onChange={(e)=>setInternalUserId(e.target.value)} required><option value="">Select user</option>{profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.full_name || 'Unnamed user'} · {profile.role}</option>)}</select></label>
+        <label>Internal role<select value={internalRole} onChange={(e)=>setInternalRole(e.target.value)}><option value="support_agent">Support agent</option><option value="auditor">Auditor</option><option value="analyst">Analyst</option><option value="rider">Return to rider</option></select></label>
+        <button className="button button-secondary" type="submit" disabled={assigningRole}>{assigningRole?'Saving…':'Assign internal role'}</button>
+      </form>
+      <p className="small muted">Platform-admin assignment is intentionally not offered here. Bootstrap or rotate platform admins through a reviewed, out-of-band SQL procedure.</p>
+    </section>
+
+    <section className="panel admin-panel">
+      <div className="panel-heading"><div><h3><FileCheck2 size={17}/> Product catalog management</h3><p>New products are always created as unpublished drafts. Publishing is a separate, audited approval step.</p></div></div>
+      <form className="admin-form-grid" onSubmit={createProduct}>
+        <label>Product category<select value={productType} onChange={(e)=>setProductType(e.target.value)}><option value="loan">Loan / financing product</option><option value="insurance">Insurance product</option></select></label>
+        <label>Partner organization<select value={productOrganizationId} onChange={(e)=>setProductOrganizationId(e.target.value)} required><option value="">Select verified organization</option>{organizations.filter(org=>org.status==='verified'&&(productType==='loan'?org.partner_type==='lender':org.partner_type==='insurer')).map(org=><option key={org.id} value={org.id}>{org.display_name}{org.is_published?'':' · organization not public'}</option>)}</select></label>
+        <label>Product name<input value={productName} onChange={(e)=>setProductName(e.target.value)} maxLength={120} minLength={2} required placeholder="Product name"/></label>
+        <label>Description <span className="optional-label">Optional</span><input value={productDescription} onChange={(e)=>setProductDescription(e.target.value)} maxLength={1000} placeholder="Short, accurate description"/></label>
+        {productType==='loan' ? <>
+          <label>Purpose<select value={productPurpose} onChange={(e)=>setProductPurpose(e.target.value)}><option value="motorcycle_purchase">Motorcycle purchase</option><option value="motorcycle_maintenance">Motorcycle maintenance</option><option value="electric_motorcycle">Electric motorcycle</option><option value="business_expansion">Business expansion</option><option value="general">General</option></select></label>
+          <label>Minimum amount (RWF) <span className="optional-label">Optional</span><input type="number" min="1" value={minAmount} onChange={(e)=>setMinAmount(e.target.value)} placeholder="50000"/></label>
+          <label>Maximum amount (RWF) <span className="optional-label">Optional</span><input type="number" min="1" value={maxAmount} onChange={(e)=>setMaxAmount(e.target.value)} placeholder="2000000"/></label>
+          <label>Minimum term (months) <input type="number" min="1" max="120" value={minTerm} onChange={(e)=>setMinTerm(e.target.value)} required/></label>
+          <label>Maximum term (months) <input type="number" min="1" max="120" value={maxTerm} onChange={(e)=>setMaxTerm(e.target.value)} required/></label>
+        </> : <>
+          <label>Coverage type<input value={coverageType} onChange={(e)=>setCoverageType(e.target.value)} maxLength={100} required placeholder="motorcycle_third_party"/></label>
+          <label>Premium basis<input value={premiumBasis} onChange={(e)=>setPremiumBasis(e.target.value)} maxLength={100} required/></label>
+          <label>Exclusions <span className="optional-label">Optional</span><input value={exclusions} onChange={(e)=>setExclusions(e.target.value)} maxLength={3000} placeholder="Important exclusions"/></label>
+          <label className="admin-checkbox"><input type="checkbox" checked={monthlyPayments} onChange={(e)=>setMonthlyPayments(e.target.checked)}/> Monthly payment option is actually supported</label>
+        </>}
+        <label className="quote-terms-label admin-terms-label">Published terms JSON<textarea rows={4} value={termsJson} onChange={(e)=>setTermsJson(e.target.value)} required/></label>
+        <button className="button button-primary" type="submit" disabled={creatingProduct||!productOrganizationId}>{creatingProduct?'Creating…':'Create draft product'} <ArrowRight size={15}/></button>
+      </form>
+      <div className="admin-record-list">
+        {loanProducts.map(product=><article className="admin-record" key={product.id}><div className="admin-record-main"><b>{product.name}</b><span>{orgName(product.partner_id)} · Loan</span><small>{product.min_amount?fmt(Number(product.min_amount)):'No minimum'} to {product.max_amount?fmt(Number(product.max_amount)):'No maximum'} · {product.min_term_months||'—'} to {product.max_term_months||'—'} months</small><small>{product.is_published?'Published to rider catalog':'Draft / unpublished'}</small></div><div className="admin-record-actions"><button className="button button-secondary" onClick={()=>void runOperation('publish_partner_product',{product_type:'loan',product_id:product.id,is_published:!product.is_published},product.is_published?'Loan product unpublished.':'Loan product published.')}>{product.is_published?'Unpublish':'Publish'}</button></div></article>)}
+        {insuranceProducts.map(product=><article className="admin-record" key={product.id}><div className="admin-record-main"><b>{product.name}</b><span>{orgName(product.partner_id)} · Insurance</span><small>{product.coverage_type.replaceAll('_',' ')} · {product.supports_monthly_payments?'Monthly option':'Ask insurer for payment options'}</small><small>{product.is_published?'Published to rider catalog':'Draft / unpublished'}</small></div><div className="admin-record-actions"><button className="button button-secondary" onClick={()=>void runOperation('publish_partner_product',{product_type:'insurance',product_id:product.id,is_published:!product.is_published},product.is_published?'Insurance product unpublished.':'Insurance product published.')}>{product.is_published?'Unpublish':'Publish'}</button></div></article>)}
+        {!loanProducts.length&&!insuranceProducts.length&&<div className="compact-empty">No products are registered yet.</div>}
+      </div>
+    </section>
   </div>;
 }
 

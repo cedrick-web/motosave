@@ -1,8 +1,14 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.118.0";
 
 type Json = Record<string, unknown>;
-type PartnerType = "lender" | "insurer" | "support_agent";
-type PartnerRole = "lender_officer" | "insurer_officer" | "support_agent";
+type PartnerType = "cooperative" | "lender" | "insurer" | "payment_provider" | "service_provider";
+type PartnerRole = "cooperative_officer" | "lender_officer" | "insurer_officer" | "support_agent" | "auditor";
+
+const partnerRoleOrganizationType: Record<string, PartnerType> = {
+  cooperative_officer: "cooperative",
+  lender_officer: "lender",
+  insurer_officer: "insurer",
+};
 
 const loanStatuses = new Set([
   "submitted", "awaiting_documents", "under_review", "referred_to_partner", "offer_available",
@@ -106,15 +112,32 @@ async function audit(
 
 async function loadQueue(admin: SupabaseClient, userId: string, role: string): Promise<Json> {
   if (role === "platform_admin") {
-    const [loanApps, claims, tickets, policies, quoteRequests] = await Promise.all([
+    const [loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts] = await Promise.all([
       admin.from("loan_applications").select("id,application_ref,user_id,product_id,purpose,requested_amount,term_months,status,submitted_at").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_claims").select("id,user_id,policy_id,incident_date,description,status,created_at").order("created_at", { ascending: false }).limit(100),
       admin.from("support_tickets").select("id,user_id,subject,category,description,status,priority,assigned_to,created_at").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_policies").select("id,user_id,product_id,policy_number,status,coverage_start,coverage_end,provider_reference").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_quote_requests").select("id,user_id,product_id,motorcycle_id,notes,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at,decision_reason,created_at").order("created_at", { ascending: false }).limit(100),
+      admin.from("partner_organizations").select("id,legal_name,display_name,partner_type,public_contact,status,is_published,created_at").order("created_at", { ascending: false }).limit(200),
+      admin.from("partner_memberships").select("id,user_id,organization_id,partner_role,status,created_at").order("created_at", { ascending: false }).limit(300),
+      admin.from("profiles").select("id,full_name,phone,role,account_status,created_at").order("created_at", { ascending: false }).limit(200),
+      admin.from("loan_products").select("id,partner_id,name,description,purpose,min_amount,max_amount,min_term_months,max_term_months,is_published").order("created_at", { ascending: false }).limit(200),
+      admin.from("insurance_products").select("id,partner_id,name,description,coverage_type,supports_monthly_payments,is_published").order("created_at", { ascending: false }).limit(200),
     ]);
-    if ([loanApps, claims, tickets, policies, quoteRequests].some((result) => result.error)) throw new Error("queue_load_failed");
-    return { role, loan_applications: loanApps.data || [], insurance_claims: claims.data || [], support_tickets: tickets.data || [], insurance_policies: policies.data || [], insurance_quote_requests: quoteRequests.data || [] };
+    if ([loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts].some((result) => result.error)) throw new Error("queue_load_failed");
+    return {
+      role,
+      loan_applications: loanApps.data || [],
+      insurance_claims: claims.data || [],
+      support_tickets: tickets.data || [],
+      insurance_policies: policies.data || [],
+      insurance_quote_requests: quoteRequests.data || [],
+      partner_organizations: organizations.data || [],
+      partner_memberships: memberships.data || [],
+      profiles: profiles.data || [],
+      loan_products: loanProducts.data || [],
+      insurance_products: insuranceProducts.data || [],
+    };
   }
 
   if (role === "lender_officer") {
@@ -220,6 +243,187 @@ Deno.serve(async (request: Request) => {
   const requestId = request.headers.get("x-request-id");
 
   try {
+    if (action === "create_partner_organization") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const legalName = textValue(body.legal_name, 200);
+      const displayName = textValue(body.display_name, 120);
+      const partnerType = textValue(body.partner_type, 40);
+      const contact = textValue(body.public_contact, 240);
+      const validTypes = new Set(["cooperative", "lender", "insurer", "payment_provider", "service_provider"]);
+      if (!legalName || !displayName || !partnerType || !validTypes.has(partnerType) || !validReason(body.reason)) return fail("legal_name_display_name_partner_type_and_reason_required", 400, allowedOrigin);
+      const { data: organization, error } = await admin.from("partner_organizations").insert({
+        legal_name: legalName,
+        display_name: displayName,
+        partner_type: partnerType,
+        public_contact: contact,
+        status: "pending_verification",
+        is_published: false,
+      }).select("id,legal_name,display_name,partner_type,public_contact,status,is_published,created_at").single();
+      if (error || !organization) return fail("partner_organization_create_failed", 500, allowedOrigin);
+      await audit(admin, userId, "create_partner_organization", "partner_organization", organization.id, reason, organization.id, requestId);
+      return respond(201, { ok: true, organization }, allowedOrigin);
+    }
+
+    if (action === "review_partner_organization") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const organizationId = textValue(body.organization_id, 80);
+      const nextStatus = textValue(body.status, 40);
+      const shouldPublish = body.is_published === true;
+      const validStatuses = new Set(["pending_verification", "verified", "suspended", "rejected"]);
+      if (!organizationId || !nextStatus || !validStatuses.has(nextStatus)) return fail("organization_id_and_valid_status_required", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("verification_reason_required", 400, allowedOrigin);
+      const { data: organization } = await admin.from("partner_organizations").select("id,partner_type,status").eq("id", organizationId).maybeSingle();
+      if (!organization) return fail("partner_organization_not_found", 404, allowedOrigin);
+      const publish = nextStatus === "verified" && shouldPublish;
+      const { error: updateError } = await admin.from("partner_organizations").update({
+        status: nextStatus,
+        is_published: publish,
+        updated_at: new Date().toISOString(),
+      }).eq("id", organizationId);
+      if (updateError) return fail("partner_review_failed", 500, allowedOrigin);
+
+      const { data: orgMemberships, error: membershipError } = await admin.from("partner_memberships")
+        .select("id,user_id,partner_role,status").eq("organization_id", organizationId);
+      if (membershipError) return fail("partner_membership_review_failed", 500, allowedOrigin);
+      for (const membership of orgMemberships || []) {
+        const memberRole = String(membership.partner_role);
+        const mappedType = partnerRoleOrganizationType[memberRole];
+        if (nextStatus === "verified" && mappedType === organization.partner_type) {
+          const { data: memberProfile } = await admin.from("profiles").select("account_status").eq("id", membership.user_id).maybeSingle();
+          if (memberProfile?.account_status === "active") {
+            await admin.from("partner_memberships").update({ status: "active" }).eq("id", membership.id);
+            await admin.from("profiles").update({ role: memberRole, updated_at: new Date().toISOString() }).eq("id", membership.user_id);
+          }
+        } else if (["suspended", "rejected", "pending_verification"].includes(nextStatus)) {
+          await admin.from("partner_memberships").update({ status: "suspended" }).eq("id", membership.id);
+          const { data: otherMemberships } = await admin.from("partner_memberships")
+            .select("id").eq("user_id", membership.user_id).eq("partner_role", memberRole).eq("status", "active").neq("organization_id", organizationId).limit(1);
+          if (!otherMemberships?.length) {
+            await admin.from("profiles").update({ role: "rider", updated_at: new Date().toISOString() }).eq("id", membership.user_id);
+          }
+        }
+      }
+      await audit(admin, userId, "review_partner_organization", "partner_organization", organizationId, reason, organizationId, requestId);
+      return respond(200, { ok: true, organization_id: organizationId, status: nextStatus, is_published: publish }, allowedOrigin);
+    }
+
+    if (action === "assign_internal_role") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const targetUserId = textValue(body.user_id, 80);
+      const targetRole = textValue(body.role, 40);
+      const allowedRoles = new Set(["rider", "support_agent", "auditor", "analyst"]);
+      if (!targetUserId || !targetRole || !allowedRoles.has(targetRole)) return fail("user_and_allowed_internal_role_required", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("internal_role_reason_required", 400, allowedOrigin);
+      const { data: targetProfile } = await admin.from("profiles").select("id,role,account_status").eq("id", targetUserId).maybeSingle();
+      if (!targetProfile || targetProfile.account_status !== "active") return fail("active_profile_required", 400, allowedOrigin);
+      const { error } = await admin.from("profiles").update({ role: targetRole, updated_at: new Date().toISOString() }).eq("id", targetUserId);
+      if (error) return fail("internal_role_assignment_failed", 500, allowedOrigin);
+      await audit(admin, userId, "assign_internal_role", "profile", targetUserId, String(body.reason), null, requestId);
+      return respond(200, { ok: true, user_id: targetUserId, role: targetRole }, allowedOrigin);
+    }
+
+    if (action === "assign_partner_membership") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const organizationId = textValue(body.organization_id, 80);
+      const memberUserId = textValue(body.user_id, 80);
+      const memberRole = textValue(body.partner_role, 40);
+      if (!organizationId || !memberUserId || !memberRole || !Object.prototype.hasOwnProperty.call(partnerRoleOrganizationType, memberRole)) {
+        return fail("organization_user_and_valid_partner_role_required", 400, allowedOrigin);
+      }
+      if (!validReason(body.reason)) return fail("membership_reason_required", 400, allowedOrigin);
+      const { data: organization } = await admin.from("partner_organizations").select("id,partner_type,status").eq("id", organizationId).maybeSingle();
+      if (!organization) return fail("partner_organization_not_found", 404, allowedOrigin);
+      if (partnerRoleOrganizationType[memberRole] !== organization.partner_type) return fail("partner_role_does_not_match_organization_type", 400, allowedOrigin);
+      const { data: memberProfile } = await admin.from("profiles").select("id,account_status").eq("id", memberUserId).maybeSingle();
+      if (!memberProfile || memberProfile.account_status !== "active") return fail("active_profile_required", 400, allowedOrigin);
+      const active = organization.status === "verified";
+      const { data: membership, error } = await admin.from("partner_memberships").upsert({
+        user_id: memberUserId,
+        organization_id: organizationId,
+        partner_role: memberRole,
+        status: active ? "active" : "pending",
+      }, { onConflict: "user_id,organization_id" }).select("id,user_id,organization_id,partner_role,status").single();
+      if (error || !membership) return fail("partner_membership_assignment_failed", 500, allowedOrigin);
+      if (active) {
+        const { error: profileUpdateError } = await admin.from("profiles")
+          .update({ role: memberRole, updated_at: new Date().toISOString() }).eq("id", memberUserId);
+        if (profileUpdateError) return fail("membership_created_profile_role_update_failed", 500, allowedOrigin);
+      }
+      await audit(admin, userId, "assign_partner_membership", "partner_membership", membership.id, reason, organizationId, requestId);
+      return respond(201, { ok: true, membership }, allowedOrigin);
+    }
+
+    if (action === "create_loan_product") {
+      if (!actorCanUseRole(role, ["lender_officer"])) return fail("lender_access_required", 403, allowedOrigin);
+      const organizationId = textValue(body.partner_id, 80);
+      const name = textValue(body.name, 120);
+      const description = textValue(body.description, 1000);
+      const purpose = textValue(body.purpose, 120) || "general";
+      const minAmount = body.min_amount === null || body.min_amount === undefined || body.min_amount === "" ? null : Number(body.min_amount);
+      const maxAmount = body.max_amount === null || body.max_amount === undefined || body.max_amount === "" ? null : Number(body.max_amount);
+      const minTerm = body.min_term_months === null || body.min_term_months === undefined || body.min_term_months === "" ? null : Number(body.min_term_months);
+      const maxTerm = body.max_term_months === null || body.max_term_months === undefined || body.max_term_months === "" ? null : Number(body.max_term_months);
+      const terms = body.published_terms && typeof body.published_terms === "object" && !Array.isArray(body.published_terms) ? body.published_terms : {};
+      if (!organizationId || !name || name.length < 2 ||
+          (minAmount !== null && (!Number.isFinite(minAmount) || minAmount <= 0)) ||
+          (maxAmount !== null && (!Number.isFinite(maxAmount) || maxAmount <= 0)) ||
+          (minAmount !== null && maxAmount !== null && minAmount > maxAmount) ||
+          (minTerm !== null && (!Number.isInteger(minTerm) || minTerm < 1 || minTerm > 120)) ||
+          (maxTerm !== null && (!Number.isInteger(maxTerm) || maxTerm < 1 || maxTerm > 120)) ||
+          (minTerm !== null && maxTerm !== null && minTerm > maxTerm)) return fail("invalid_loan_product_fields", 400, allowedOrigin);
+      const { data: organization } = await admin.from("partner_organizations").select("id,partner_type,status").eq("id", organizationId).maybeSingle();
+      if (!organization || organization.partner_type !== "lender" || organization.status !== "verified") return fail("verified_lender_organization_required", 403, allowedOrigin);
+      if (!await authorizePartner(admin, userId, role, organizationId, "lender", "lender_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
+      const { data: product, error } = await admin.from("loan_products").insert({
+        partner_id: organizationId, name, description, purpose,
+        min_amount: minAmount, max_amount: maxAmount, min_term_months: minTerm, max_term_months: maxTerm,
+        published_terms: terms, is_published: false,
+      }).select("id,partner_id,name,description,purpose,min_amount,max_amount,min_term_months,max_term_months,is_published").single();
+      if (error || !product) return fail("loan_product_create_failed", 500, allowedOrigin);
+      await audit(admin, userId, "create_loan_product", "loan_product", product.id, reason, organizationId, requestId);
+      return respond(201, { ok: true, product }, allowedOrigin);
+    }
+
+    if (action === "create_insurance_product") {
+      if (!actorCanUseRole(role, ["insurer_officer"])) return fail("insurer_access_required", 403, allowedOrigin);
+      const organizationId = textValue(body.partner_id, 80);
+      const name = textValue(body.name, 120);
+      const coverageType = textValue(body.coverage_type, 100);
+      const description = textValue(body.description, 1000);
+      const exclusions = textValue(body.exclusions, 3000);
+      const premiumBasis = textValue(body.premium_basis, 100) || "quote_required";
+      const supportsMonthly = body.supports_monthly_payments === true;
+      const terms = body.terms && typeof body.terms === "object" && !Array.isArray(body.terms) ? body.terms : {};
+      if (!organizationId || !name || name.length < 2 || !coverageType) return fail("invalid_insurance_product_fields", 400, allowedOrigin);
+      const { data: organization } = await admin.from("partner_organizations").select("id,partner_type,status").eq("id", organizationId).maybeSingle();
+      if (!organization || organization.partner_type !== "insurer" || organization.status !== "verified") return fail("verified_insurer_organization_required", 403, allowedOrigin);
+      if (!await authorizePartner(admin, userId, role, organizationId, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
+      const { data: product, error } = await admin.from("insurance_products").insert({
+        partner_id: organizationId, name, coverage_type: coverageType, description, exclusions,
+        premium_basis: premiumBasis, supports_monthly_payments: supportsMonthly, terms, is_published: false,
+      }).select("id,partner_id,name,description,coverage_type,exclusions,premium_basis,supports_monthly_payments,terms,is_published").single();
+      if (error || !product) return fail("insurance_product_create_failed", 500, allowedOrigin);
+      await audit(admin, userId, "create_insurance_product", "insurance_product", product.id, reason, organizationId, requestId);
+      return respond(201, { ok: true, product }, allowedOrigin);
+    }
+
+    if (action === "publish_partner_product") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const productType = textValue(body.product_type, 20);
+      const productId = textValue(body.product_id, 80);
+      if (!productType || !productId || !["loan", "insurance"].includes(productType) || typeof body.is_published !== "boolean" || !validReason(body.reason)) return fail("product_type_id_publish_boolean_and_reason_required", 400, allowedOrigin);
+      const tableName = productType === "loan" ? "loan_products" : "insurance_products";
+      const { data: product } = await admin.from(tableName).select("id,partner_id").eq("id", productId).maybeSingle();
+      if (!product) return fail("partner_product_not_found", 404, allowedOrigin);
+      const { data: organization } = await admin.from("partner_organizations").select("id,status,is_published").eq("id", product.partner_id).maybeSingle();
+      if (!organization || organization.status !== "verified") return fail("verified_partner_required", 403, allowedOrigin);
+      if (body.is_published === true && organization.is_published !== true) return fail("partner_organization_must_be_published_first", 409, allowedOrigin);
+      const { error } = await admin.from(tableName).update({ is_published: body.is_published, updated_at: new Date().toISOString() }).eq("id", productId);
+      if (error) return fail("partner_product_publish_failed", 500, allowedOrigin);
+      await audit(admin, userId, "publish_partner_product", productType + "_product", productId, reason, product.partner_id, requestId);
+      return respond(200, { ok: true, product_id: productId, is_published: body.is_published }, allowedOrigin);
+    }
+
     if (action === "list_queue") {
       if (!actorCanUseRole(role, ["lender_officer", "insurer_officer", "support_agent"])) {
         return fail("operations_access_denied", 403, allowedOrigin);

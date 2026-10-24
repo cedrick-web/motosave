@@ -46,3 +46,44 @@ Partner roles are intentionally not self-service. Activate a partner organizatio
 - Insurer partners can issue a quote with premium, coverage duration, structured written terms/exclusions, and an expiry. Riders can accept/decline the issued quote. Acceptance creates a policy record in `awaiting_payment`; it does not activate cover.
 - Every partner action requires an authenticated profile, active account, verified organization, and active partner membership and is written to `audit_logs`.
 - A trusted admin must create/verify partner organizations, assign membership roles, and approve/publish products. Never enable partner roles from public signup metadata.
+
+
+## First platform administrator (one-time bootstrap)
+
+The signup trigger deliberately creates new accounts as `rider`. There is no public endpoint or signup metadata field that can create a platform administrator.
+
+1. Create a normal account using the intended administrative email and confirm it.
+2. In Supabase Dashboard, inspect `auth.users` to obtain the exact UUID for that confirmed account.
+3. In SQL Editor, update the one reviewed profile by UUID. Replace the placeholder with the verified UUID, not an email supplied by a request:
+
+```sql
+begin;
+
+update public.profiles
+set role = 'platform_admin',
+    account_status = 'active',
+    updated_at = now()
+where id = 'REPLACE_WITH_VERIFIED_AUTH_USER_UUID';
+
+-- Verify exactly one row was updated before committing.
+select id, full_name, role, account_status
+from public.profiles
+where id = 'REPLACE_WITH_VERIFIED_AUTH_USER_UUID';
+
+commit;
+```
+
+4. Sign out and back in so the web app refreshes the protected profile role.
+5. Assign all further staff/partner roles from the platform operations workspace. The UI does not provide a way to assign a platform-admin role.
+6. Record who authorized the first bootstrap in your organization's external change log. Review the audit log after all subsequent changes.
+
+Do not run the bootstrap snippet with a UUID you have not verified. Use a separate admin account for day-to-day operations where possible, enable MFA for privileged accounts, and rotate access if staff leave.
+
+## Partner operations and product publishing
+
+- Create a partner organization with its full legal identity. It starts in `pending_verification`.
+- Verify the organization through a trusted evidence review. Publish it only when it is authorized to appear in the rider catalog.
+- Assign a role matching the organization type. Memberships assigned before verification remain pending; the review workflow activates matching pending memberships after the organization is verified.
+- Create loan/insurance product drafts. Drafts are not visible to riders.
+- Publish a product only after checking official pricing, total repayment/fees or coverage terms/exclusions, eligibility, validity dates, and partner authority.
+- Product publishing is audited and requires a verified, published organization.
