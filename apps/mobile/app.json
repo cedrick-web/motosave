@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "MotoSave",
+    "slug": "motosave",
+    "scheme": "motosave",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "rw.motosave.app"
+    },
+    "android": {
+      "package": "rw.motosave.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#2869DF"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ]
+  }
+}
