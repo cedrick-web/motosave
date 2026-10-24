@@ -614,3 +614,9 @@ td small { display: block; color: #9aa5b6; font-size: 9px; }
   .notification-record-heading { flex-direction:column; gap:4px; }
   .notification-record > .button { margin-left:50px; }
 }
+
+.disbursement-record { display:grid; grid-column:1 / -1; gap:9px; padding:13px; border:1px solid #dce7f7; border-radius:10px; background:#f8faff; }
+.disbursement-record label { display:grid; gap:6px; color:#5e708c; font-size:9px; font-weight:800; }
+.disbursement-record input { width:100%; padding:9px 10px; border:1px solid #dfe6f1; border-radius:8px; background:#fff; color:#2e405f; font-size:10px; }
+.disbursement-record p { margin:0; line-height:1.5; }
+.disbursement-record .button { width:fit-content; }

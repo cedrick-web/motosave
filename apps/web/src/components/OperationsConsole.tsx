@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 
 type LoanApplication = {
   id: string; application_ref: string; user_id: string; purpose: string; requested_amount: number; term_months: number;
-  status: string; submitted_at?: string; created_at?: string;
+  status: string; lender_reference?: string | null; submitted_at?: string; created_at?: string;
 };
 type InsuranceClaim = {
   id: string; policy_id: string; incident_date: string; description: string; status: string; created_at: string;
@@ -44,6 +44,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const [queue, setQueue] = useState<Queue | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState('');
+  const [disbursementRefs, setDisbursementRefs] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [reason, setReason] = useState('');
   const [offerFor, setOfferFor] = useState<LoanApplication | null>(null);
@@ -86,15 +87,16 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
 
   useEffect(() => { void load(); }, [load]);
 
-  async function updateStatus(action: string, idName: string, id: string, status: string) {
+  async function updateStatus(action: string, idName: string, id: string, status: string, extra: Record<string, unknown> = {}) {
     if (reason.trim().length < 5) {
       setError('Enter a short, accurate reason in the audit note field before changing a record.');
       return;
     }
     setBusyId(id); setError('');
     try {
-      await invoke({ action, [idName]: id, status, reason: reason.trim() });
-      onNotify('Status updated and audit event recorded.');
+      await invoke({ action, [idName]: id, status, reason: reason.trim(), ...extra });
+      if (status === 'disbursed') setDisbursementRefs((rows) => { const next = { ...rows }; delete next[id]; return next; });
+      onNotify(status === 'disbursed' ? 'External disbursement reference recorded. MotoSave did not transfer funds.' : 'Status updated and audit event recorded.');
       setReason('');
       await load();
     } catch (err) {
@@ -225,7 +227,18 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     </div>}
 
     {!!queue?.loan_applications?.length && <section className="panel operations-panel"><div className="panel-heading"><div><h3><HandCoins size={17} /> Lending queue</h3><p>All offers require clear total repayment, fees, term, and frequency.</p></div><span className="count-pill">{queue.loan_applications.length}</span></div>
-      <div className="operations-list">{queue.loan_applications.map((application) => <article className="operation-card" key={application.id}><div className="operation-card-main"><b>{application.application_ref} · {application.purpose.replaceAll('_',' ')}</b><span>{fmt(Number(application.requested_amount))} requested · {application.term_months} months</span><small>Received {fmtDate(application.submitted_at || application.created_at)} · Applicant ID {application.user_id.slice(0,8)}…</small></div><span className={'status-pill ' + statusTone(application.status)}>{application.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'under_review')}>Start review</button><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_documents')}>Request documents</button><button className="button button-primary" disabled={busyId===application.id} onClick={() => prepareOffer(application)}>Prepare offer</button><button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'rejected_by_lender')}>Reject</button></div>
+      <div className="operations-list">{queue.loan_applications.map((application) => <article className="operation-card" key={application.id}><div className="operation-card-main"><b>{application.application_ref} · {application.purpose.replaceAll('_',' ')}</b><span>{fmt(Number(application.requested_amount))} requested · {application.term_months} months</span><small>Received {fmtDate(application.submitted_at || application.created_at)} · Applicant ID {application.user_id.slice(0,8)}…</small></div><span className={'status-pill ' + statusTone(application.status)}>{application.status.replaceAll('_',' ')}</span><div className="operation-buttons">
+          {['submitted','awaiting_documents','referred_to_partner'].includes(application.status) && <button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'under_review')}>Start review</button>}
+          {['submitted','under_review','referred_to_partner'].includes(application.status) && <button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_documents')}>Request documents</button>}
+          {['under_review','referred_to_partner'].includes(application.status) && <button className="button button-primary" disabled={busyId===application.id} onClick={() => prepareOffer(application)}>Prepare offer</button>}
+          {['submitted','awaiting_documents','under_review','referred_to_partner'].includes(application.status) && <button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'rejected_by_lender')}>Reject</button>}
+          {application.status === 'accepted_by_applicant' && <button className="button button-primary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_agreement')}>Start agreement</button>}
+          {application.status === 'awaiting_agreement' && <button className="button button-primary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_disbursement')}>Agreement complete</button>}
+          {application.status === 'awaiting_disbursement' && <div className="disbursement-record"><label>Verified external disbursement reference<input value={disbursementRefs[application.id] || ''} onChange={(e)=>setDisbursementRefs((rows)=>({...rows,[application.id]:e.target.value}))} maxLength={160} placeholder="Lender core-system reference" /></label><p className="small muted">Use only after the lender confirms funds were actually disbursed outside MotoSave.</p><button className="button button-primary" disabled={busyId===application.id||!(disbursementRefs[application.id]||'').trim()} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'disbursed',{partner_reference:(disbursementRefs[application.id]||'').trim()})}>Record verified disbursement</button></div>}
+          {application.status === 'disbursed' && <><span className="status-pill success">External reference: {application.lender_reference || 'Not recorded'}</span><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'active')}>Mark active</button><button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'completed')}>Mark completed</button></>}
+          {application.status === 'offer_available' && <span className="small muted">Waiting for the rider to accept or decline the offer.</span>}
+          {application.status === 'declined_by_applicant' && <span className="small muted">The rider declined the offer. No funds were moved.</span>}
+        </div>
         {offerFor?.id===application.id && <form className="offer-form" onSubmit={submitOffer}><div className="offer-form-title"><b>Create lender offer</b><button type="button" className="text-button" onClick={()=>setOfferFor(null)}>Close</button></div><div className="offer-fields"><label>Principal amount (RWF)<input type="number" min="1" value={principal} onChange={(e)=>setPrincipal(e.target.value)} required /></label><label>Interest rate value<input type="number" min="0" step="0.00001" value={rate} onChange={(e)=>setRate(e.target.value)} required /></label><label>Interest basis<input value={interestBasis} onChange={(e)=>setInterestBasis(e.target.value)} required maxLength={80} /></label><label>Fees (RWF)<input type="number" min="0" step="1" value={fees} onChange={(e)=>setFees(e.target.value)} required /></label><label>Total repayment (RWF)<input type="number" min="1" step="1" value={totalRepayment} onChange={(e)=>setTotalRepayment(e.target.value)} required /></label><label>Term (months)<input type="number" min="1" max="120" step="1" value={term} onChange={(e)=>setTerm(e.target.value)} required /></label><label>Payment frequency<select value={frequency} onChange={(e)=>setFrequency(e.target.value)}><option value="weekly">Weekly</option><option value="biweekly">Every two weeks</option><option value="monthly">Monthly</option></select></label><label>Offer expiry <span className="optional-label">Optional</span><input type="datetime-local" value={expiresAt} onChange={(e)=>setExpiresAt(e.target.value)} /></label></div><div className="inline-note"><AlertCircle size={15} /> The rate basis and full costs must match the lender's binding terms. This screen does not calculate an amortization schedule.</div><button className="button button-primary" type="submit" disabled={busyId===application.id}>{busyId===application.id?'Saving offer…':'Create and record offer' } <ArrowRight size={15}/></button></form>}
       </article>)}</div>
     </section>}

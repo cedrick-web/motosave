@@ -15,6 +15,17 @@ const loanStatuses = new Set([
   "approved_by_lender", "rejected_by_lender", "awaiting_agreement", "awaiting_disbursement",
   "disbursed", "active", "completed", "cancelled", "withdrawn", "expired",
 ]);
+const loanStatusTransitions: Record<string, string[]> = {
+  submitted: ["under_review", "awaiting_documents", "referred_to_partner", "rejected_by_lender", "cancelled"],
+  awaiting_documents: ["under_review", "referred_to_partner", "rejected_by_lender", "cancelled"],
+  under_review: ["awaiting_documents", "referred_to_partner", "rejected_by_lender"],
+  referred_to_partner: ["under_review", "awaiting_documents", "rejected_by_lender"],
+  accepted_by_applicant: ["awaiting_agreement", "cancelled"],
+  awaiting_agreement: ["awaiting_disbursement", "cancelled", "expired"],
+  awaiting_disbursement: ["disbursed", "cancelled"],
+  disbursed: ["active", "completed"],
+  active: ["completed"],
+};
 const claimStatuses = new Set([
   "submitted", "under_review", "information_requested", "accepted", "rejected", "settled", "closed",
 ]);
@@ -599,15 +610,25 @@ Deno.serve(async (request: Request) => {
       if (!await authorizePartner(admin, userId, role, product.partner_id, "lender", "lender_officer")) {
         return fail("partner_scope_denied", 403, allowedOrigin);
       }
-      if (["completed", "rejected_by_lender", "cancelled", "withdrawn", "expired"].includes(application.status)) {
-        return fail("application_is_terminal", 409, allowedOrigin);
+      const allowedNextStatuses = loanStatusTransitions[application.status] || [];
+      if (!allowedNextStatuses.includes(nextStatus)) {
+        return fail("invalid_loan_status_transition", 409, allowedOrigin);
       }
       if (nextStatus === "rejected_by_lender" && !validReason(body.reason)) return fail("rejection_reason_required", 400, allowedOrigin);
-      const { error: updateError } = await admin.from("loan_applications").update({
+      const update: Json = {
         status: nextStatus,
         decided_at: ["approved_by_lender", "rejected_by_lender"].includes(nextStatus) ? new Date().toISOString() : null,
         updated_at: new Date().toISOString(),
-      }).eq("id", applicationId);
+      };
+      if (nextStatus === "disbursed") {
+        const partnerReference = textValue(body.partner_reference, 160);
+        if (!partnerReference || !validReason(body.reason)) {
+          return fail("verified_external_disbursement_reference_and_reason_required", 400, allowedOrigin);
+        }
+        update.lender_reference = partnerReference;
+      }
+      const { error: updateError } = await admin.from("loan_applications").update(update)
+        .eq("id", applicationId).eq("status", application.status);
       if (updateError) return fail("application_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "update_loan_status", "loan_application", applicationId, reason, product.partner_id, requestId);
       return respond(200, { ok: true, application_id: applicationId, status: nextStatus }, allowedOrigin);
