@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
-import { Bike, ShieldCheck } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 
 export default function AuthScreen() {
@@ -53,9 +53,9 @@ export default function AuthScreen() {
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <View style={styles.brandRow}><View style={styles.brandMark}><Bike size={23} color="#fff" /></View><Text style={styles.brand}>MotoSave</Text><View style={styles.beta}><Text style={styles.betaText}>RW</Text></View></View>
+        <View style={styles.brandRow}><View style={styles.brandMark}><Ionicons name="bicycle-outline" size={23} color="#fff" /></View><Text style={styles.brand}>MotoSave</Text><View style={styles.beta}><Text style={styles.betaText}>RW</Text></View></View>
         <View style={styles.hero}>
-          <View style={styles.eyebrowRow}><ShieldCheck size={15} color="#B7D1FF" /><Text style={styles.eyebrow}>FINANCIAL CONFIDENCE FOR EVERY RIDE</Text></View>
+          <View style={styles.eyebrowRow}><Ionicons name="shield-checkmark-outline" size={15} color="#B7D1FF" /><Text style={styles.eyebrow}>FINANCIAL CONFIDENCE FOR EVERY RIDE</Text></View>
           <Text style={styles.title}>Your hard work deserves a stronger future.</Text>
           <Text style={styles.subtitle}>Save toward what matters, track financing requests, and keep motorcycle records organized.</Text>
           <View style={styles.pill}><View style={styles.pillDot} /><Text style={styles.pillText}>One clear place for your next step</Text></View>

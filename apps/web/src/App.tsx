@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   Activity, AlertCircle, ArrowDownRight, ArrowRight, BadgeCheck, Bell, Bike, CalendarDays,
   CheckCircle2, ChevronDown, CircleHelp, Clock3, CreditCard, FileCheck2, FileText, HandCoins,
