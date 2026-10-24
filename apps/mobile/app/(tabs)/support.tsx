@@ -4,11 +4,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { isSupabaseConfigured, supabase } from '../../lib/supabase';
 
 type Ticket = { id: string; subject: string; category: string; description: string; status: string; created_at: string };
+type SupportMessage = { id: string; ticket_id: string; author_id: string; body: string; created_at: string };
 
 const formatDate = (value: string) => new Intl.DateTimeFormat('en-RW', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value));
 
 export default function SupportScreen() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [selectedTicketId, setSelectedTicketId] = useState('');
+  const [ticketMessages, setTicketMessages] = useState<SupportMessage[]>([]);
+  const [replyText, setReplyText] = useState('');
+  const [currentUserId, setCurrentUserId] = useState('');
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sendingReply, setSendingReply] = useState(false);
   const [category, setCategory] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -16,15 +23,60 @@ export default function SupportScreen() {
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured) { setLoading(false); return; }
+    const { data: auth } = await supabase.auth.getUser();
+    setCurrentUserId(auth.user?.id || '');
     const { data, error } = await supabase.from('support_tickets')
       .select('id,subject,category,description,status,created_at')
       .order('created_at', { ascending: false }).limit(50);
     if (error) Alert.alert('Could not load support requests', error.message);
-    setTickets((data || []) as Ticket[]);
+    const nextTickets = (data || []) as Ticket[];
+    setTickets(nextTickets);
+    setSelectedTicketId((current) => nextTickets.some((ticket) => ticket.id === current) ? current : (nextTickets[0]?.id || ''));
     setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void loadMessages(selectedTicketId); }, [loadMessages, selectedTicketId]);
+
+  const loadMessages = useCallback(async (ticketId: string) => {
+    if (!ticketId || !isSupabaseConfigured) { setTicketMessages([]); return; }
+    setLoadingMessages(true);
+    try {
+      const { data, error } = await supabase.from('support_messages')
+        .select('id,ticket_id,author_id,body,created_at')
+        .eq('ticket_id', ticketId).order('created_at', { ascending: true }).limit(500);
+      if (error) throw error;
+      setTicketMessages((data || []) as SupportMessage[]);
+    } catch (error) {
+      Alert.alert('Could not load conversation', error instanceof Error ? error.message : 'Please try again.');
+    } finally { setLoadingMessages(false); }
+  }, []);
+
+  async function sendReply() {
+    const body = replyText.trim();
+    const selected = tickets.find((ticket) => ticket.id === selectedTicketId);
+    if (!selected) { Alert.alert('Choose a request', 'Select a support request to reply to.'); return; }
+    if (!body) { Alert.alert('Write a reply', 'Enter a message before sending.'); return; }
+    if (['resolved','closed'].includes(selected.status)) {
+      Alert.alert('Request closed', 'Create a new ticket if you still need help.');
+      return;
+    }
+    setSendingReply(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('partner-operations', {
+        body: { action: 'reply_to_support_ticket', ticket_id: selected.id, message: body },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(String(data.error));
+      setReplyText('');
+      await Promise.all([load(), loadMessages(selected.id)]);
+      Alert.alert('Reply sent', 'Your message has been added to the support conversation.');
+    } catch (error) {
+      Alert.alert('Could not send reply', error instanceof Error ? error.message : 'Please try again.');
+    } finally { setSendingReply(false); }
+  }
+
+
 
   async function submit() {
     if (!category) { Alert.alert('Choose a topic', 'Select the category that best matches your issue.'); return; }
@@ -54,8 +106,15 @@ export default function SupportScreen() {
       <Pressable style={[styles.button,sending && {opacity:.6}]} disabled={sending} onPress={submit}>{sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Submit support request  →</Text>}</Pressable>
     </View>
     <View style={styles.sectionHeading}><Text style={styles.sectionTitle}>Your requests</Text><Text style={styles.count}>{tickets.length}</Text></View>
-    {loading ? <ActivityIndicator color="#2869DF" style={{ marginTop: 20 }} /> : tickets.map((ticket) => <View style={styles.ticketCard} key={ticket.id}><View style={styles.ticketIcon}><Ionicons name="chatbubble-ellipses-outline" size={20} color="#2869DF" /></View><View style={{flex:1}}><Text style={styles.ticketTitle}>{ticket.subject}</Text><Text style={styles.ticketMeta}>{formatDate(ticket.created_at)} · {ticket.category}</Text><Text style={styles.ticketDescription}>{ticket.description}</Text></View><View style={styles.status}><Text style={styles.statusText}>{ticket.status.replaceAll('_',' ')}</Text></View></View>)}
+    {loading ? <ActivityIndicator color="#2869DF" style={{ marginTop: 20 }} /> : tickets.map((ticket) => <Pressable key={ticket.id} onPress={() => setSelectedTicketId(ticket.id)} style={[styles.ticketCard,selectedTicketId===ticket.id&&styles.ticketSelected]}><View style={styles.ticketIcon}><Ionicons name="chatbubble-ellipses-outline" size={20} color="#2869DF" /></View><View style={{flex:1}}><Text style={styles.ticketTitle}>{ticket.subject}</Text><Text style={styles.ticketMeta}>{formatDate(ticket.created_at)} · {ticket.category}</Text><Text style={styles.ticketDescription}>{ticket.description}</Text></View><View style={styles.status}><Text style={styles.statusText}>{ticket.status.replaceAll('_',' ')}</Text></View></Pressable>)}
     {!loading && tickets.length === 0 && <View style={styles.empty}><Ionicons name="chatbubbles-outline" size={26} color="#7698D3" /><Text style={styles.emptyTitle}>No support requests yet</Text><Text style={styles.emptyText}>Requests you submit will appear here.</Text></View>}
+    {selectedTicketId && <View style={styles.formCard}><Text style={styles.formTitle}>Conversation</Text><Text style={styles.formHint}>Messages are private to this support request. Never send passwords, PINs, or verification codes.</Text>
+      {loadingMessages ? <ActivityIndicator color="#2869DF" style={{marginVertical:14}}/> : ticketMessages.map(item=><View key={item.id} style={[styles.messageBubble,item.author_id===currentUserId ? styles.messageOwn : styles.messageStaff]}><Text style={styles.messageAuthor}>{item.author_id===currentUserId?'You':'MotoSave support'}</Text><Text style={styles.messageText}>{item.body}</Text><Text style={styles.messageDate}>{formatDate(item.created_at)}</Text></View>)}
+      {!loadingMessages&&!ticketMessages.length&&<Text style={styles.emptyText}>No replies yet. New responses will appear here.</Text>}
+      {tickets.find(ticket=>ticket.id===selectedTicketId)&&!['resolved','closed'].includes(tickets.find(ticket=>ticket.id===selectedTicketId)!.status)
+        ? <><TextInput style={[styles.input,styles.message]} value={replyText} onChangeText={setReplyText} multiline maxLength={5000} placeholder="Reply to your support request..." placeholderTextColor="#94A1B5"/><Pressable style={[styles.button,sendingReply&&{opacity:.6}]} disabled={sendingReply||!replyText.trim()} onPress={sendReply}>{sendingReply?<ActivityIndicator color="#fff"/>:<Text style={styles.buttonText}>Send reply  →</Text>}</Pressable></>
+        : <Text style={styles.footerNote}>This request is closed. Create a new request if you still need support.</Text>}
+    </View>}
   </ScrollView>;
 }
 
@@ -81,6 +140,13 @@ const styles = StyleSheet.create({
   sectionTitle:{color:'#263954',fontSize:16,fontWeight:'800'},
   count:{color:'#2869DF',backgroundColor:'#E6EEFF',borderRadius:7,overflow:'hidden',paddingHorizontal:8,paddingVertical:4,fontSize:9,fontWeight:'800'},
   ticketCard:{flexDirection:'row',alignItems:'flex-start',gap:10,padding:13,borderRadius:13,backgroundColor:'#fff',borderWidth:1,borderColor:'#E7EDF5',marginBottom:9},
+  ticketSelected:{borderColor:'#A9C6F5',backgroundColor:'#F3F7FF'},
+  messageBubble:{padding:11,borderRadius:11,borderWidth:1,marginBottom:8},
+  messageOwn:{borderColor:'#CFE0FA',backgroundColor:'#F2F7FF'},
+  messageStaff:{borderColor:'#E7EDF5',backgroundColor:'#FBFCFE'},
+  messageAuthor:{color:'#516989',fontSize:9,fontWeight:'800',marginBottom:5},
+  messageText:{color:'#3A4C68',fontSize:10,lineHeight:16},
+  messageDate:{color:'#91A0B4',fontSize:8,marginTop:6},
   ticketIcon:{width:40,height:40,borderRadius:12,backgroundColor:'#EAF1FF',alignItems:'center',justifyContent:'center'},
   ticketTitle:{color:'#344560',fontSize:11,fontWeight:'800',marginBottom:4},
   ticketMeta:{color:'#8A97AC',fontSize:9,marginBottom:6},

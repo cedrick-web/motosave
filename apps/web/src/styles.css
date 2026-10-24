@@ -620,3 +620,26 @@ td small { display: block; color: #9aa5b6; font-size: 9px; }
 .disbursement-record input { width:100%; padding:9px 10px; border:1px solid #dfe6f1; border-radius:8px; background:#fff; color:#2e405f; font-size:10px; }
 .disbursement-record p { margin:0; line-height:1.5; }
 .disbursement-record .button { width:fit-content; }
+
+/* Staff support conversation */
+.support-operation-card.ticket-selected { border-color:#a9c6f5; background:#f6f9ff; }
+.staff-support-conversation { display:grid; gap:12px; padding:15px; border:1px solid #e3ebf7; border-radius:12px; background:#fbfcff; margin-top:14px; }
+.staff-support-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding-bottom:10px; border-bottom:1px solid #e8edf5; }
+.staff-support-heading > div { display:grid; gap:5px; min-width:0; }
+.staff-support-heading b { color:#30425f; font-size:11px; line-height:1.5; overflow-wrap:anywhere; }
+.staff-support-heading small { color:#8795ab; font-size:9px; overflow-wrap:anywhere; }
+.staff-support-original { padding:12px; border:1px solid #e7edf5; border-radius:10px; background:#fff; }
+.staff-support-original b { color:#5b6d88; font-size:9px; }
+.staff-support-original p { margin:6px 0 0; color:#63758f; font-size:10px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.staff-support-messages { display:grid; gap:9px; max-height:400px; overflow:auto; }
+.staff-support-message { display:grid; gap:5px; max-width:92%; padding:11px 12px; border:1px solid #e6edf6; border-radius:11px; background:#fff; }
+.staff-support-message.own { justify-self:end; border-color:#cbdcf7; background:#f0f6ff; }
+.staff-support-message.other { justify-self:start; }
+.staff-support-message b { color:#4f6687; font-size:9px; }
+.staff-support-message p { margin:0; color:#455a78; font-size:10px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.staff-support-message time { color:#96a2b4; font-size:8px; }
+.staff-support-reply { display:grid; gap:10px; padding-top:10px; border-top:1px solid #e8edf5; }
+.staff-support-reply label { display:grid; gap:7px; color:#5f718c; font-size:10px; font-weight:750; }
+.staff-support-reply textarea { width:100%; min-height:84px; padding:10px 11px; border:1px solid #dfe6f1; border-radius:9px; background:#fff; color:#2e405f; font:inherit; font-size:10px; line-height:1.6; resize:vertical; }
+.staff-support-reply .button { justify-self:start; }
+@media (max-width:640px) { .staff-support-message { max-width:100%; } }

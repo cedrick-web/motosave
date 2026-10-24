@@ -519,12 +519,14 @@ create policy support_tickets_select_own on public.support_tickets for select to
 create policy support_tickets_insert_own on public.support_tickets for insert to authenticated with check (user_id = (select auth.uid()));
 
 grant select on public.support_messages to authenticated;
-grant insert (ticket_id, body) on public.support_messages to authenticated;
+-- Replies are inserted only through the authenticated, audited partner-operations function.
 create policy support_messages_select_own on public.support_messages for select to authenticated using (
   exists (select 1 from public.support_tickets t where t.id = ticket_id and t.user_id = (select auth.uid()))
 );
 create policy support_messages_insert_own on public.support_messages for insert to authenticated with check (
-  author_id = (select auth.uid()) and exists (select 1 from public.support_tickets t where t.id = ticket_id and t.user_id = (select auth.uid()))
+  author_id = (select auth.uid()) and exists (
+    select 1 from public.support_tickets t where t.id = ticket_id and t.user_id = (select auth.uid()) and t.status not in ('resolved','closed')
+  )
 );
 
 -- Privileged operational data is server-managed. No direct browser/mobile table grants.

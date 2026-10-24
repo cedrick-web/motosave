@@ -43,6 +43,8 @@ type InsuranceProduct = { id: string; name: string; description: string | null; 
 type QuoteRequest = { id: string; motorcycle_id: string | null; product_id: string | null; notes: string | null; status: string; quoted_premium: number | null; coverage_duration_months: number | null; quoted_terms: Record<string, unknown>; quote_expires_at: string | null; decision_reason: string | null; created_at: string };
 type MotorcycleDocument = { id: string; motorcycle_id: string; document_type: string; storage_path: string; expires_on: string | null; verification_status: string; created_at: string };
 type NotificationRecord = { id: string; title: string; message: string; is_read: boolean; created_at: string };
+type SupportTicketRecord = { id: string; subject: string; category?: string; description: string; status: string; priority?: string; assigned_to?: string | null; created_at: string };
+type SupportMessageRecord = { id: string; ticket_id: string; author_id: string; body: string; created_at: string };
 type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; loan_product_id: string; quote_product_id: string; quote_notes: string; service_date: string; service_description: string; service_amount: string; odometer_km: string; next_service_date: string; claim_policy_id: string; incident_date: string; incident_description: string };
 const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', loan_product_id: '', quote_product_id: '', quote_notes: '', service_date: new Date().toISOString().slice(0, 10), service_description: '', service_amount: '', odometer_km: '', next_service_date: '', claim_policy_id: '', incident_date: new Date().toISOString().slice(0, 10), incident_description: '' };
 
@@ -723,42 +725,177 @@ function NotificationsPage({ notifications, onMarkRead, onMarkAllRead }: { notif
 function SupportPage({ demo, onToast }: { demo: boolean; onToast: (message: string) => void }) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
+  const [tickets, setTickets] = useState<SupportTicketRecord[]>([]);
+  const [selectedTicketId, setSelectedTicketId] = useState('');
+  const [ticketMessages, setTicketMessages] = useState<SupportMessageRecord[]>([]);
+  const [replyText, setReplyText] = useState('');
+  const [currentUserId, setCurrentUserId] = useState(demo ? 'demo-rider' : '');
+  const [loadingTickets, setLoadingTickets] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingReply, setSendingReply] = useState(false);
   const [sentReference, setSentReference] = useState('');
   const [error, setError] = useState('');
+  const [replyError, setReplyError] = useState('');
+
+  const loadTickets = useCallback(async () => {
+    setLoadingTickets(true);
+    setError('');
+    try {
+      if (demo) {
+        let stored: unknown = [];
+        try { stored = JSON.parse(localStorage.getItem('motosave.support.tickets') || '[]') as unknown; } catch { stored = []; }
+        const rows = Array.isArray(stored) ? stored as SupportTicketRecord[] : [];
+        setTickets(rows);
+        setSelectedTicketId((current) => rows.some((ticket) => ticket.id === current) ? current : (rows[0]?.id || ''));
+        setCurrentUserId('demo-rider');
+      } else if (supabase) {
+        const { data: auth, error: authError } = await supabase.auth.getUser();
+        if (authError || !auth.user) throw new Error('Your session expired. Sign in again.');
+        setCurrentUserId(auth.user.id);
+        const { data, error: loadError } = await supabase.from('support_tickets')
+          .select('id,subject,category,description,status,priority,assigned_to,created_at')
+          .order('created_at', { ascending: false }).limit(50);
+        if (loadError) throw loadError;
+        const rows = (data || []) as SupportTicketRecord[];
+        setTickets(rows);
+        setSelectedTicketId((current) => rows.some((ticket) => ticket.id === current) ? current : (rows[0]?.id || ''));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Support requests could not be loaded.');
+    } finally { setLoadingTickets(false); }
+  }, [demo]);
+
+  const loadMessages = useCallback(async (ticketId: string) => {
+    if (!ticketId) { setTicketMessages([]); return; }
+    setLoadingMessages(true);
+    setReplyError('');
+    try {
+      if (demo) {
+        let stored: unknown = [];
+        try { stored = JSON.parse(localStorage.getItem('motosave.support.messages.' + ticketId) || '[]') as unknown; } catch { stored = []; }
+        setTicketMessages(Array.isArray(stored) ? stored as SupportMessageRecord[] : []);
+      } else if (supabase) {
+        const { data, error: loadError } = await supabase.from('support_messages')
+          .select('id,ticket_id,author_id,body,created_at')
+          .eq('ticket_id', ticketId).order('created_at', { ascending: true }).limit(500);
+        if (loadError) throw loadError;
+        setTicketMessages((data || []) as SupportMessageRecord[]);
+      }
+    } catch (err) {
+      setReplyError(err instanceof Error ? err.message : 'Conversation could not be loaded.');
+    } finally { setLoadingMessages(false); }
+  }, [demo]);
+
+  useEffect(() => { void loadTickets(); }, [loadTickets]);
+  useEffect(() => { void loadMessages(selectedTicketId); }, [loadMessages, selectedTicketId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSending(true); setError(''); setSentReference('');
     try {
       if (!subject || message.trim().length < 10) throw new Error('Choose a topic and describe the issue in at least 10 characters.');
-      if (supabase && !demo) {
+      if (!demo && supabase) {
         const { data: authData, error: authError } = await supabase.auth.getUser();
         if (authError || !authData.user) throw new Error('Your session has expired. Sign in again.');
         const { data, error: insertError } = await supabase.from('support_tickets').insert({
-          user_id: authData.user.id, subject: 'MotoSave support: ' + subject, category: subject, description: message.trim()
+          user_id: authData.user.id,
+          subject: 'MotoSave support: ' + subject,
+          category: subject,
+          description: message.trim()
         }).select('id').single();
         if (insertError) throw insertError;
         setSentReference(data.id);
+        setSelectedTicketId(data.id);
         onToast('Support ticket submitted. Keep its reference for follow-up.');
       } else {
         const key = 'motosave.support.tickets';
-        let existing: unknown[] = [];
-        try { existing = JSON.parse(localStorage.getItem(key) || '[]') as unknown[]; } catch { existing = []; }
+        let existing: SupportTicketRecord[] = [];
+        try { existing = JSON.parse(localStorage.getItem(key) || '[]') as SupportTicketRecord[]; } catch { existing = []; }
         const id = 'DEMO-' + Date.now().toString(36).toUpperCase();
-        localStorage.setItem(key, JSON.stringify([{ id, subject, description: message.trim(), created_at: new Date().toISOString(), status: 'draft_demo' }, ...existing]));
+        const ticket: SupportTicketRecord = {
+          id, subject, category: subject, description: message.trim(),
+          created_at: new Date().toISOString(), status: 'draft_demo'
+        };
+        localStorage.setItem(key, JSON.stringify([ticket, ...existing]));
+        setTickets((rows) => [ticket, ...rows]);
+        setSelectedTicketId(id);
         setSentReference(id);
         onToast('Demo support draft saved in this browser only.');
       }
       setSubject(''); setMessage('');
+      await loadTickets();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Support request could not be submitted.');
     } finally { setSending(false); }
   }
 
-  return <div className="support-layout"><section className="support-welcome"><div className="support-icon-large"><LifeBuoy size={35} /></div><span className="eyebrow">WE'RE HERE TO HELP</span><h2>Good support should feel simple.</h2><p>Describe what happened without sharing passwords, payment PINs, or verification codes. The request will remain linked to your account.</p><div className="support-topic"><ShieldCheck size={18} /><div><b>Insurance questions</b><span>Coverage and claims decisions belong to your insurer.</span></div></div><div className="support-topic"><CreditCard size={18} /><div><b>Payment questions</b><span>Keep the provider reference and never share your PIN.</span></div></div></section><section className="panel support-form-panel"><h3>Contact support</h3><p className="muted">{demo ? 'Demo mode stores a fictional support draft in this browser only.' : 'Your request will be saved to your signed-in account.'}</p><form className="form-stack" onSubmit={submit}><label>Topic<select value={subject} onChange={(e) => setSubject(e.target.value)} required><option value="">Select a topic</option><option>Account access</option><option>Savings record</option><option>Loan application</option><option>Insurance policy</option><option>Payment question</option><option>Other</option></select></label><label>What happened?<textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={5} placeholder="Describe the problem without sharing credentials or PINs." /></label>{error && <div className="alert alert-error">{error}</div>}{sentReference && <div className="alert alert-success">Saved reference: {sentReference}</div>}<button className="button button-primary button-wide" disabled={sending} type="submit">{sending ? 'Submitting…' : 'Submit support request'} <ArrowRight size={16} /></button></form></section></div>;
-}
+  async function submitReply(event: FormEvent) {
+    event.preventDefault();
+    const body = replyText.trim();
+    const selectedTicket = tickets.find((ticket) => ticket.id === selectedTicketId);
+    if (!selectedTicket) { setReplyError('Choose a support request first.'); return; }
+    if (['resolved','closed'].includes(selectedTicket.status)) {
+      setReplyError('This request is closed. Submit a new ticket if you still need help.');
+      return;
+    }
+    if (!body) { setReplyError('Write a reply before sending.'); return; }
+    setSendingReply(true); setReplyError('');
+    try {
+      if (demo) {
+        const item: SupportMessageRecord = {
+          id: 'DEMO-MSG-' + Date.now().toString(36),
+          ticket_id: selectedTicket.id,
+          author_id: currentUserId || 'demo-rider',
+          body,
+          created_at: new Date().toISOString()
+        };
+        const key = 'motosave.support.messages.' + selectedTicket.id;
+        let existing: SupportMessageRecord[] = [];
+        try { existing = JSON.parse(localStorage.getItem(key) || '[]') as SupportMessageRecord[]; } catch { existing = []; }
+        localStorage.setItem(key, JSON.stringify([...existing, item]));
+        setTicketMessages((rows) => [...rows, item]);
+        setReplyText('');
+        return;
+      }
+      if (!supabase) throw new Error('Supabase is not configured.');
+      const { data, error: callError } = await supabase.functions.invoke('partner-operations', {
+        body: { action: 'reply_to_support_ticket', ticket_id: selectedTicket.id, message: body },
+      });
+      if (callError) throw callError;
+      if (data?.error) throw new Error(String(data.error));
+      setReplyText('');
+      await Promise.all([loadMessages(selectedTicket.id), loadTickets()]);
+      onToast('Reply sent. The support team has been notified.');
+    } catch (err) {
+      setReplyError(err instanceof Error ? err.message : 'Reply could not be sent.');
+    } finally { setSendingReply(false); }
+  }
 
+  const selectedTicket = tickets.find((ticket) => ticket.id === selectedTicketId) || null;
+  return <div className="support-page">
+    <div className="support-layout"><section className="support-welcome"><div className="support-icon-large"><LifeBuoy size={35} /></div><span className="eyebrow">WE'RE HERE TO HELP</span><h2>Good support should feel simple.</h2><p>Describe what happened without sharing passwords, payment PINs, or verification codes. Your request stays linked to your account.</p><div className="support-topic"><ShieldCheck size={18} /><div><b>Insurance questions</b><span>Coverage and claims decisions belong to your insurer.</span></div></div><div className="support-topic"><CreditCard size={18} /><div><b>Payment questions</b><span>Keep the provider reference and never share your PIN.</span></div></div></section><section className="panel support-form-panel"><h3>Contact support</h3><p className="muted">{demo ? 'Demo mode stores fictional support drafts in this browser only.' : 'Your request will be saved to your signed-in account.'}</p><form className="form-stack" onSubmit={submit}><label>Topic<select value={subject} onChange={(e) => setSubject(e.target.value)} required><option value="">Select a topic</option><option>Account access</option><option>Savings record</option><option>Loan application</option><option>Insurance policy</option><option>Payment question</option><option>Other</option></select></label><label>What happened?<textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={5} placeholder="Describe the problem without sharing credentials or PINs." /></label>{error && <div className="alert alert-error">{error}</div>}{sentReference && <div className="alert alert-success">Saved reference: {sentReference}</div>}<button className="button button-primary button-wide" disabled={sending} type="submit">{sending ? 'Submitting…' : 'Submit support request'} <ArrowRight size={16} /></button></form></section></div>
+
+    <section className="panel support-history-panel"><div className="panel-heading"><div><h3>Your support requests <span className="count-pill">{tickets.length}</span></h3><p>Open a request to see the conversation and reply.</p></div><button className="button button-secondary" onClick={() => void loadTickets()} disabled={loadingTickets}>{loadingTickets ? 'Refreshing…' : 'Refresh'}</button></div>
+      <div className="support-history-grid"><div className="support-ticket-list">
+        {loadingTickets && <div className="compact-empty">Loading support requests…</div>}
+        {!loadingTickets && tickets.map((ticket) => <button type="button" key={ticket.id} className={'support-ticket-row ' + (selectedTicketId===ticket.id?'selected':'')} onClick={() => setSelectedTicketId(ticket.id)}><span><b>{ticket.subject}</b><small>{fmtDate(ticket.created_at)} · {(ticket.category||'Support').replaceAll('_',' ')}</small><small>{ticket.status.replaceAll('_',' ')}</small></span><ArrowRight size={15}/></button>)}
+        {!loadingTickets && !tickets.length && <div className="compact-empty">You have not submitted a support request yet.</div>}
+      </div>
+      <div className="support-conversation">
+        {selectedTicket ? <><div className="support-conversation-heading"><div><b>{selectedTicket.subject}</b><small>Reference {selectedTicket.id} · {selectedTicket.status.replaceAll('_',' ')}</small></div><span className={'status-pill ' + (['resolved','closed'].includes(selectedTicket.status)?'success':'warning')}>{selectedTicket.status.replaceAll('_',' ')}</span></div>
+          <div className="support-original-message"><b>Your request</b><p>{selectedTicket.description}</p></div>
+          <div className="support-message-list">
+            {loadingMessages && <div className="compact-empty">Loading conversation…</div>}
+            {!loadingMessages && ticketMessages.map((item) => <div key={item.id} className={'support-message ' + (item.author_id===currentUserId?'own':'staff')}><b>{item.author_id===currentUserId?'You':'MotoSave support'}</b><p>{item.body}</p><time>{fmtDate(item.created_at)}</time></div>)}
+            {!loadingMessages && !ticketMessages.length && <div className="compact-empty">No replies yet. Support messages will appear here.</div>}
+          </div>
+          {['resolved','closed'].includes(selectedTicket.status) ? <div className="inline-note"><CheckCircle2 size={16}/> This request is closed. Submit another ticket if you still need help.</div> : <form className="support-reply-form" onSubmit={submitReply}><label>Reply to this request<textarea value={replyText} onChange={(e)=>setReplyText(e.target.value)} maxLength={5000} rows={3} required placeholder="Add details or reply to the support team."/></label>{replyError&&<div className="alert alert-error">{replyError}</div>}<button className="button button-primary" type="submit" disabled={sendingReply||!replyText.trim()}>{sendingReply?'Sending reply…':'Send reply'} <ArrowRight size={15}/></button></form>}
+        </> : <div className="compact-empty">Choose a request to view its conversation.</div>}
+      </div></div>
+    </section>
+  </div>;
+}
 function SettingsPage({ profileName, profileLanguage, profileRole, onSave, demo }: { profileName: string; profileLanguage: 'en' | 'rw'; profileRole: string; onSave: (name: string, language: 'en' | 'rw') => Promise<void>; demo: boolean }) {
   const [name, setName] = useState(profileName);
   const [language, setLanguage] = useState<'en' | 'rw'>(profileLanguage);

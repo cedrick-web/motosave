@@ -200,6 +200,7 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
     const { data, error } = await admin.from("support_tickets")
       .select("id,user_id,subject,category,description,status,priority,assigned_to,created_at")
       .in("status", ["open", "assigned", "awaiting_user", "awaiting_partner"])
+      .or("assigned_to.is.null,assigned_to.eq." + userId)
       .order("created_at", { ascending: true }).limit(100);
     if (error) throw new Error("support_queue_load_failed");
     return { role, support_tickets: data || [] };
@@ -784,13 +785,74 @@ Deno.serve(async (request: Request) => {
       return respond(200, { ok: true, policy_id: policyId, status: nextStatus }, allowedOrigin);
     }
 
+    if (action === "list_ticket_messages") {
+      const ticketId = textValue(body.ticket_id, 80);
+      if (!ticketId) return fail("ticket_id_required", 400, allowedOrigin);
+      const { data: ticket } = await admin.from("support_tickets")
+        .select("id,user_id,status,assigned_to").eq("id", ticketId).maybeSingle();
+      if (!ticket) return fail("ticket_not_found", 404, allowedOrigin);
+      if (role === "rider" && ticket.user_id !== userId) return fail("ticket_not_found", 404, allowedOrigin);
+      if (role === "support_agent" && ticket.assigned_to && ticket.assigned_to !== userId) return fail("ticket_assigned_to_another_agent", 403, allowedOrigin);
+      if (!["rider", "support_agent", "platform_admin"].includes(role)) return fail("support_access_required", 403, allowedOrigin);
+      const { data: messages, error } = await admin.from("support_messages")
+        .select("id,ticket_id,author_id,body,created_at")
+        .eq("ticket_id", ticketId).order("created_at", { ascending: true }).limit(500);
+      if (error) return fail("support_messages_load_failed", 500, allowedOrigin);
+      return respond(200, { ok: true, ticket_id: ticketId, status: ticket.status, assigned_to: ticket.assigned_to, messages: messages || [] }, allowedOrigin);
+    }
+
+    if (action === "reply_to_support_ticket") {
+      if (!["rider", "support_agent", "platform_admin"].includes(role)) return fail("support_reply_access_required", 403, allowedOrigin);
+      const ticketId = textValue(body.ticket_id, 80);
+      const message = textValue(body.message, 5000);
+      if (!ticketId || !message || message.length < 1) return fail("ticket_id_and_message_required", 400, allowedOrigin);
+      const { data: ticket } = await admin.from("support_tickets")
+        .select("id,user_id,status,assigned_to,subject").eq("id", ticketId).maybeSingle();
+      if (!ticket) return fail("ticket_not_found", 404, allowedOrigin);
+      if (["resolved", "closed"].includes(ticket.status)) return fail("ticket_is_closed", 409, allowedOrigin);
+      const isRiderReply = role === "rider";
+      if (isRiderReply && ticket.user_id !== userId) return fail("ticket_not_found", 404, allowedOrigin);
+      if (role === "support_agent" && ticket.assigned_to && ticket.assigned_to !== userId) return fail("ticket_assigned_to_another_agent", 403, allowedOrigin);
+      const { data: savedMessage, error: insertError } = await admin.from("support_messages").insert({
+        ticket_id: ticketId, author_id: userId, body: message,
+      }).select("id,ticket_id,author_id,body,created_at").single();
+      if (insertError || !savedMessage) return fail("support_reply_insert_failed", 500, allowedOrigin);
+      const nextStatus = isRiderReply ? "awaiting_partner" : "awaiting_user";
+      const ticketUpdate: Json = { status: nextStatus, updated_at: new Date().toISOString() };
+      if (role === "support_agent") ticketUpdate.assigned_to = userId;
+      const { error: updateError } = await admin.from("support_tickets").update(ticketUpdate).eq("id", ticketId);
+      if (updateError) return respond(500, { error: "reply_saved_ticket_status_update_failed", message_id: savedMessage.id }, allowedOrigin);
+      if (!isRiderReply) {
+        await admin.from("notifications").insert({
+          user_id: ticket.user_id,
+          title: "MotoSave support replied",
+          message: "A support agent replied to your request: " + ticket.subject,
+          notification_type: "support_reply",
+          action_path: "/support",
+        });
+      } else if (ticket.assigned_to) {
+        await admin.from("notifications").insert({
+          user_id: ticket.assigned_to,
+          title: "Rider replied to a support request",
+          message: "A rider added information to: " + ticket.subject,
+          notification_type: "support_reply",
+          action_path: "/operations",
+        });
+      }
+      const auditReason = isRiderReply ? "Rider replied in a support ticket." : "Support agent replied in a support ticket.";
+      await audit(admin, userId, "reply_to_support_ticket", "support_ticket", ticketId, auditReason, null, requestId);
+      return respond(201, { ok: true, message: savedMessage, status: nextStatus }, allowedOrigin);
+    }
+
     if (action === "assign_support_ticket") {
       if (!actorCanUseRole(role, ["support_agent"])) return fail("support_access_required", 403, allowedOrigin);
       const ticketId = textValue(body.ticket_id, 80);
       const nextStatus = textValue(body.status || "assigned", 80);
       if (!ticketId || !nextStatus || !ticketStatuses.has(nextStatus)) return fail("invalid_ticket_or_status", 400, allowedOrigin);
-      const { data: ticket } = await admin.from("support_tickets").select("id,status").eq("id", ticketId).maybeSingle();
+      const { data: ticket } = await admin.from("support_tickets").select("id,status,assigned_to").eq("id", ticketId).maybeSingle();
       if (!ticket) return fail("ticket_not_found", 404, allowedOrigin);
+      if (["resolved", "closed"].includes(ticket.status)) return fail("ticket_is_closed", 409, allowedOrigin);
+      if (role === "support_agent" && ticket.assigned_to && ticket.assigned_to !== userId) return fail("ticket_assigned_to_another_agent", 403, allowedOrigin);
       const { error } = await admin.from("support_tickets").update({
         assigned_to: userId, status: nextStatus, updated_at: new Date().toISOString(),
       }).eq("id", ticketId);

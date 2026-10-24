@@ -1,5 +1,5 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, BadgeCheck, BriefcaseBusiness, Clock3, FileCheck2, HandCoins, LifeBuoy, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ArrowRight, BadgeCheck, BriefcaseBusiness, CheckCircle2, Clock3, FileCheck2, HandCoins, LifeBuoy, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 type LoanApplication = {
@@ -15,9 +15,10 @@ type InsurancePolicy = {
 };
 type InsuranceQuoteRequest = { id: string; user_id: string; product_id: string | null; motorcycle_id: string | null; notes: string | null; status: string; quoted_premium: number | null; coverage_duration_months: number | null; quoted_terms: Record<string, unknown>; quote_expires_at: string | null; decision_reason: string | null; created_at: string };
 type SupportTicket = {
-  id: string; subject: string; category: string; description: string; status: string;
+  id: string; user_id: string; subject: string; category: string; description: string; status: string;
   priority: string; assigned_to: string | null; created_at: string;
 };
+type SupportMessage = { id: string; ticket_id: string; author_id: string; body: string; created_at: string };
 type PartnerOrganization = { id: string; legal_name: string; display_name: string; partner_type: string; public_contact: string | null; status: string; is_published: boolean; created_at: string };
 type PartnerMembership = { id: string; user_id: string; organization_id: string; partner_role: string; status: string; created_at: string };
 type AdminProfile = { id: string; full_name: string; phone: string | null; role: string; account_status: string; created_at: string };
@@ -49,6 +50,13 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const [disbursementRefs, setDisbursementRefs] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [reason, setReason] = useState('');
+  const [currentUserId, setCurrentUserId] = useState('');
+  const [selectedSupportTicketId, setSelectedSupportTicketId] = useState('');
+  const [supportMessages, setSupportMessages] = useState<SupportMessage[]>([]);
+  const [supportReplyText, setSupportReplyText] = useState('');
+  const [loadingSupportMessages, setLoadingSupportMessages] = useState(false);
+  const [sendingSupportReply, setSendingSupportReply] = useState(false);
+  const [supportReplyError, setSupportReplyError] = useState('');
   const [offerFor, setOfferFor] = useState<LoanApplication | null>(null);
   const [principal, setPrincipal] = useState('');
   const [rate, setRate] = useState('');
@@ -80,14 +88,54 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      const data = await invoke({ action: 'list_queue' });
-      setQueue(data.queue as Queue);
+      const [data, authResult] = await Promise.all([
+        invoke({ action: 'list_queue' }),
+        supabase ? supabase.auth.getUser() : Promise.resolve({ data: { user: null }, error: null }),
+      ]);
+      const nextQueue = data.queue as Queue;
+      setQueue(nextQueue);
+      setCurrentUserId(authResult.data.user?.id || '');
+      const tickets = nextQueue.support_tickets || [];
+      setSelectedSupportTicketId((current) => tickets.some((ticket) => ticket.id === current) ? current : (tickets[0]?.id || ''));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'The operations queue could not be loaded.');
     } finally { setLoading(false); }
   }, [invoke]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const loadSupportMessages = useCallback(async (ticketId: string) => {
+    if (!ticketId) { setSupportMessages([]); return; }
+    setLoadingSupportMessages(true); setSupportReplyError('');
+    try {
+      const result = await invoke({ action: 'list_ticket_messages', ticket_id: ticketId });
+      setSupportMessages(Array.isArray(result.messages) ? result.messages as SupportMessage[] : []);
+    } catch (err) {
+      setSupportReplyError(err instanceof Error ? err.message : 'The support conversation could not be loaded.');
+    } finally { setLoadingSupportMessages(false); }
+  }, [invoke]);
+
+  useEffect(() => { void loadSupportMessages(selectedSupportTicketId); }, [loadSupportMessages, selectedSupportTicketId]);
+
+  async function sendSupportReply(event: FormEvent) {
+    event.preventDefault();
+    const body = supportReplyText.trim();
+    const ticket = queue?.support_tickets?.find((item) => item.id === selectedSupportTicketId);
+    if (!ticket) { setSupportReplyError('Choose a support ticket first.'); return; }
+    if (['resolved','closed'].includes(ticket.status)) { setSupportReplyError('This ticket is closed. Reopen it through an authorized workflow before replying.'); return; }
+    if (!body) { setSupportReplyError('Write a reply before sending.'); return; }
+    setSendingSupportReply(true); setSupportReplyError('');
+    try {
+      await invoke({ action: 'reply_to_support_ticket', ticket_id: ticket.id, message: body });
+      setSupportReplyText('');
+      onNotify('Support reply sent. The rider was notified.');
+      await Promise.all([loadSupportMessages(ticket.id), load()]);
+    } catch (err) {
+      setSupportReplyError(err instanceof Error ? err.message : 'The support reply could not be sent.');
+    } finally { setSendingSupportReply(false); }
+  }
+
+
 
   async function updateStatus(action: string, idName: string, id: string, status: string, extra: Record<string, unknown> = {}) {
     if (reason.trim().length < 5) {
@@ -211,6 +259,8 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     } finally { setBusyId(''); }
   }
 
+  const selectedSupportTicket = queue?.support_tickets?.find((ticket) => ticket.id === selectedSupportTicketId) || null;
+
   if (demo) return <div className="section-stack"><div className="info-callout"><ShieldAlert size={19} /><div><b>Operations are unavailable in demo mode</b><span>Connect a Supabase project and sign in with a partner role assigned through an approved administrative process. The demo client must never operate on real partner records.</span></div></div></div>;
 
   return <div className="section-stack">
@@ -262,7 +312,16 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     </section>}
 
     {!!queue?.support_tickets?.length && <section className="panel operations-panel"><div className="panel-heading"><div><h3><LifeBuoy size={17} /> Support queue</h3><p>Handle account requests without asking customers for passwords or payment PINs.</p></div><span className="count-pill">{queue.support_tickets.length}</span></div>
-      <div className="operations-list">{queue.support_tickets.map((ticket) => <article className="operation-card" key={ticket.id}><div className="operation-card-main"><b>{ticket.subject}</b><span>{ticket.description}</span><small>{ticket.category} · {ticket.priority} · {fmtDate(ticket.created_at)} · Assigned {ticket.assigned_to ? ticket.assigned_to.slice(0,8)+'…' : 'nobody'}</small></div><span className={'status-pill ' + statusTone(ticket.status)}>{ticket.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'assigned')}>Assign to me</button><button className="button button-primary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'resolved')}>Mark resolved</button></div></article>)}</div>
+      <div className="operations-list">{queue.support_tickets.map((ticket) => <article className={'operation-card support-operation-card ' + (selectedSupportTicketId===ticket.id?'ticket-selected':'')} key={ticket.id}><div className="operation-card-main"><b>{ticket.subject}</b><span>{ticket.description}</span><small>{ticket.category} · {ticket.priority} · {fmtDate(ticket.created_at)} · Applicant {ticket.user_id.slice(0,8)}… · Assigned {ticket.assigned_to ? ticket.assigned_to.slice(0,8)+'…' : 'nobody'}</small></div><span className={'status-pill ' + statusTone(ticket.status)}>{ticket.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'assigned')}>Assign to me</button><button className="button button-secondary" onClick={() => setSelectedSupportTicketId(ticket.id)}>{selectedSupportTicketId===ticket.id?'Conversation selected':'Open conversation'}</button><button className="button button-primary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'resolved')}>Mark resolved</button></div></article>)}</div>
+      {selectedSupportTicket && <div className="staff-support-conversation"><div className="staff-support-heading"><div><b>{selectedSupportTicket.subject}</b><small>Ticket {selectedSupportTicket.id} · {selectedSupportTicket.status.replaceAll('_',' ')}</small></div><span className={'status-pill '+statusTone(selectedSupportTicket.status)}>{selectedSupportTicket.status.replaceAll('_',' ')}</span></div>
+        <div className="staff-support-original"><b>Initial request</b><p>{selectedSupportTicket.description}</p></div>
+        <div className="staff-support-messages">
+          {loadingSupportMessages&&<div className="compact-empty">Loading ticket conversation…</div>}
+          {!loadingSupportMessages&&supportMessages.map((item)=><article key={item.id} className={'staff-support-message '+(item.author_id===currentUserId?'own':'other')}><b>{item.author_id===currentUserId?'You':item.author_id===selectedSupportTicket.user_id?'Rider':'MotoSave staff'}</b><p>{item.body}</p><time>{fmtDate(item.created_at)}</time></article>)}
+          {!loadingSupportMessages&&!supportMessages.length&&<div className="compact-empty">No replies yet.</div>}
+        </div>
+        {['resolved','closed'].includes(selectedSupportTicket.status) ? <div className="inline-note"><CheckCircle2 size={15}/> This ticket is closed. Do not reopen it unless policy permits.</div> : <form className="staff-support-reply" onSubmit={sendSupportReply}><label>Reply to the rider<textarea rows={3} maxLength={5000} value={supportReplyText} onChange={(e)=>setSupportReplyText(e.target.value)} required placeholder="Write a clear, helpful response. Never ask for passwords or payment PINs."/></label>{supportReplyError&&<div className="alert alert-error">{supportReplyError}</div>}<button className="button button-primary" type="submit" disabled={sendingSupportReply||!supportReplyText.trim()}>{sendingSupportReply?'Sending reply…':'Send reply'} <ArrowRight size={15}/></button></form>}
+      </div>}
     </section>}
 
     {!loading && queue && queue.role !== 'platform_admin' && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.insurance_quote_requests?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
