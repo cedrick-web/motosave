@@ -158,6 +158,11 @@ create table if not exists public.loan_offers (
   created_at timestamptz not null default now()
 );
 
+-- Prevent duplicate active offers when two authorized lender actions race.
+create unique index if not exists loan_offers_one_open_per_application
+  on public.loan_offers (application_id)
+  where status = 'offered';
+
 create table if not exists public.repayment_installments (
   id uuid primary key default gen_random_uuid(),
   loan_application_id uuid not null references public.loan_applications(id) on delete cascade,

@@ -606,8 +606,10 @@ Deno.serve(async (request: Request) => {
         update.quoted_terms = quotedTerms;
         update.quote_expires_at = expiry;
       }
-      const { error } = await admin.from("insurance_quote_requests").update(update).eq("id", quoteRequestId);
+      const { data: updatedQuote, error } = await admin.from("insurance_quote_requests").update(update)
+        .eq("id", quoteRequestId).eq("status", quoteRequest.status).select("id").maybeSingle();
       if (error) return fail("quote_request_update_failed", 500, allowedOrigin);
+      if (!updatedQuote) return fail("quote_request_changed_concurrently", 409, allowedOrigin);
       await audit(admin, userId, "respond_to_quote_request", "insurance_quote_request", quoteRequestId, reason, product.partner_id, requestId);
       const notificationTitle = nextStatus === "quote_available" ? "Your insurance quote is ready"
         : nextStatus === "declined" ? "Insurance quote request update" : "Insurance quote request status changed";
@@ -740,9 +742,10 @@ Deno.serve(async (request: Request) => {
         }
         update.lender_reference = partnerReference;
       }
-      const { error: updateError } = await admin.from("loan_applications").update(update)
-        .eq("id", applicationId).eq("status", application.status);
+      const { data: updatedApplication, error: updateError } = await admin.from("loan_applications").update(update)
+        .eq("id", applicationId).eq("status", application.status).select("id").maybeSingle();
       if (updateError) return fail("application_update_failed", 500, allowedOrigin);
+      if (!updatedApplication) return fail("application_status_changed_concurrently", 409, allowedOrigin);
       await audit(admin, userId, "update_loan_status", "loan_application", applicationId, reason, product.partner_id, requestId);
       return respond(200, { ok: true, application_id: applicationId, status: nextStatus }, allowedOrigin);
     }
@@ -875,10 +878,16 @@ Deno.serve(async (request: Request) => {
         payment_frequency: paymentFrequency, total_repayment: totalRepayment,
         terms: { reason }, expires_at: expiresAt,
       }).select("id,application_id,principal_amount,total_repayment,term_months,status,expires_at").single();
+      if (offerError?.code === "23505") return fail("open_offer_already_exists", 409, allowedOrigin);
       if (offerError || !offer) return fail("offer_create_failed", 500, allowedOrigin);
-      const { error: updateError } = await admin.from("loan_applications")
-        .update({ status: "offer_available", updated_at: new Date().toISOString() }).eq("id", applicationId);
-      if (updateError) return respond(500, { error: "offer_created_application_update_failed", offer_id: offer.id }, allowedOrigin);
+      const { data: updatedApplication, error: updateError } = await admin.from("loan_applications")
+        .update({ status: "offer_available", updated_at: new Date().toISOString() })
+        .eq("id", applicationId).eq("status", application.status)
+        .select("id").maybeSingle();
+      if (updateError || !updatedApplication) {
+        await admin.from("loan_offers").update({ status: "withdrawn" }).eq("id", offer.id).eq("status", "offered");
+        return fail(updateError ? "offer_created_application_update_failed" : "application_status_changed_during_offer_creation", updateError ? 500 : 409, allowedOrigin);
+      }
       await audit(admin, userId, "create_loan_offer", "loan_offer", offer.id, reason, product.partner_id, requestId);
       const { error: notificationError } = await admin.from("notifications").insert({
         user_id: application.user_id,
