@@ -99,7 +99,7 @@ export default function App() {
   const loadLiveData = useCallback(async () => {
     if (!supabase || !session?.user.id) return;
     const userId = session.user.id;
-    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult] = await Promise.all([
+    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, notificationCountResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult] = await Promise.all([
       supabase.from('profiles').select('full_name,role,preferred_language').eq('id', userId).maybeSingle(),
       supabase.from('savings_goals').select('*').order('created_at', { ascending: false }),
       supabase.from('savings_transactions').select('*').order('created_at', { ascending: false }).limit(100),
@@ -107,6 +107,7 @@ export default function App() {
       supabase.from('loan_applications').select('*').order('created_at', { ascending: false }),
       supabase.from('insurance_policies').select('id,policy_number,status,coverage_end,motorcycle_id').order('created_at', { ascending: false }),
       supabase.from('notifications').select('id,title,message,is_read,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('notifications').select('id', { count: 'exact', head: true }).eq('is_read', false),
       supabase.from('maintenance_records').select('id,motorcycle_id,service_date,description,amount,odometer_km,next_service_date,created_at').order('service_date', { ascending: false }).limit(100),
       supabase.from('insurance_claims').select('id,policy_id,incident_date,description,status,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('motorcycle_documents').select('id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at').order('created_at', { ascending: false }).limit(100),
@@ -134,7 +135,7 @@ export default function App() {
     if (notificationResult.data) {
       const rows = notificationResult.data as NotificationRecord[];
       setNotifications(rows);
-      setNotificationsCount(rows.filter((row) => !row.is_read).length);
+      setNotificationsCount(notificationCountResult.count ?? rows.filter((row) => !row.is_read).length);
     }
     const policyIds = (policyResult.data || []).map((policy) => policy.id);
     if (policyIds.length) {
@@ -154,7 +155,7 @@ export default function App() {
     } else {
       setLoanOffers([]); setInstallments([]);
     }
-    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult].some((result) => result.error)) {
+    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, notificationCountResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult].some((result) => result.error)) {
       notify('Some information could not be loaded. Check your Supabase migration and access policies.');
     }
   }, [session?.user.id, notify]);
