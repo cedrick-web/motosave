@@ -198,6 +198,11 @@ create table if not exists public.insurance_quote_requests (
   notes text,
   status text not null default 'submitted' check (status in ('submitted','under_review','information_requested','quote_available','accepted','declined','expired','cancelled')),
   partner_reference text,
+  quoted_premium numeric(14,2) check (quoted_premium is null or quoted_premium > 0),
+  coverage_duration_months integer check (coverage_duration_months is null or coverage_duration_months between 1 and 120),
+  quoted_terms jsonb not null default '{}'::jsonb,
+  quote_expires_at timestamptz,
+  decision_reason text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -395,8 +400,18 @@ grant usage on schema public to anon, authenticated;
 -- Public catalog access is read-only and restricted to explicitly published records.
 grant select on public.partner_organizations, public.loan_products, public.insurance_products to anon, authenticated;
 create policy published_organizations_read on public.partner_organizations for select to anon, authenticated using (status = 'verified' and is_published = true);
-create policy published_loan_products_read on public.loan_products for select to anon, authenticated using (is_published = true);
-create policy published_insurance_products_read on public.insurance_products for select to anon, authenticated using (is_published = true);
+create policy published_loan_products_read on public.loan_products for select to anon, authenticated using (
+  is_published = true and exists (
+    select 1 from public.partner_organizations po
+    where po.id = partner_id and po.status = 'verified' and po.is_published = true
+  )
+);
+create policy published_insurance_products_read on public.insurance_products for select to anon, authenticated using (
+  is_published = true and exists (
+    select 1 from public.partner_organizations po
+    where po.id = partner_id and po.status = 'verified' and po.is_published = true
+  )
+);
 
 -- Profiles: role and account_status can never be changed through the client Data API.
 grant select on public.profiles to authenticated;

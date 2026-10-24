@@ -106,14 +106,15 @@ async function audit(
 
 async function loadQueue(admin: SupabaseClient, userId: string, role: string): Promise<Json> {
   if (role === "platform_admin") {
-    const [loanApps, claims, tickets, policies] = await Promise.all([
+    const [loanApps, claims, tickets, policies, quoteRequests] = await Promise.all([
       admin.from("loan_applications").select("id,application_ref,user_id,product_id,purpose,requested_amount,term_months,status,submitted_at").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_claims").select("id,user_id,policy_id,incident_date,description,status,created_at").order("created_at", { ascending: false }).limit(100),
       admin.from("support_tickets").select("id,user_id,subject,category,description,status,priority,assigned_to,created_at").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_policies").select("id,user_id,product_id,policy_number,status,coverage_start,coverage_end,provider_reference").order("created_at", { ascending: false }).limit(100),
+      admin.from("insurance_quote_requests").select("id,user_id,product_id,motorcycle_id,notes,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at,decision_reason,created_at").order("created_at", { ascending: false }).limit(100),
     ]);
-    if ([loanApps, claims, tickets, policies].some((result) => result.error)) throw new Error("queue_load_failed");
-    return { role, loan_applications: loanApps.data || [], insurance_claims: claims.data || [], support_tickets: tickets.data || [], insurance_policies: policies.data || [] };
+    if ([loanApps, claims, tickets, policies, quoteRequests].some((result) => result.error)) throw new Error("queue_load_failed");
+    return { role, loan_applications: loanApps.data || [], insurance_claims: claims.data || [], support_tickets: tickets.data || [], insurance_policies: policies.data || [], insurance_quote_requests: quoteRequests.data || [] };
   }
 
   if (role === "lender_officer") {
@@ -138,11 +139,11 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
 
   if (role === "insurer_officer") {
     const organizations = await activePartnerMemberships(admin, userId, "insurer_officer");
-    if (!organizations.length) return { role, insurance_claims: [], insurance_policies: [] };
+    if (!organizations.length) return { role, insurance_claims: [], insurance_policies: [], insurance_quote_requests: [] };
     const { data: products, error: productError } = await admin.from("insurance_products").select("id,partner_id,name").in("partner_id", organizations);
     if (productError) throw new Error("insurance_product_lookup_failed");
     const productIds = (products || []).map((product: { id: string }) => product.id);
-    if (!productIds.length) return { role, insurance_claims: [], insurance_policies: [] };
+    if (!productIds.length) return { role, insurance_claims: [], insurance_policies: [], insurance_quote_requests: [] };
     const { data: policies, error: policyError } = await admin.from("insurance_policies")
       .select("id,user_id,product_id,policy_number,status,coverage_start,coverage_end,provider_reference")
       .in("product_id", productIds).order("created_at", { ascending: false }).limit(100);
@@ -152,7 +153,11 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
       ? await admin.from("insurance_claims").select("id,user_id,policy_id,incident_date,description,status,created_at").in("policy_id", policyIds).order("created_at", { ascending: false }).limit(100)
       : { data: [], error: null };
     if (claimResult.error) throw new Error("insurance_claim_queue_load_failed");
-    return { role, insurance_products: products || [], insurance_policies: policies || [], insurance_claims: claimResult.data || [] };
+    const { data: quoteRequests, error: quoteError } = await admin.from("insurance_quote_requests")
+      .select("id,user_id,product_id,motorcycle_id,notes,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at,decision_reason,created_at")
+      .in("product_id", productIds).order("created_at", { ascending: false }).limit(100);
+    if (quoteError) throw new Error("insurance_quote_queue_load_failed");
+    return { role, insurance_products: products || [], insurance_policies: policies || [], insurance_claims: claimResult.data || [], insurance_quote_requests: quoteRequests || [] };
   }
 
   if (role === "support_agent") {
@@ -220,6 +225,144 @@ Deno.serve(async (request: Request) => {
         return fail("operations_access_denied", 403, allowedOrigin);
       }
       return respond(200, { ok: true, queue: await loadQueue(admin, userId, role) }, allowedOrigin);
+    }
+
+    if (action === "respond_to_loan_offer") {
+      const offerId = textValue(body.offer_id, 80);
+      const decision = textValue(body.decision, 20);
+      if (!offerId || !["accepted", "declined"].includes(decision || "")) return fail("offer_id_and_valid_decision_required", 400, allowedOrigin);
+      const { data: offer } = await admin.from("loan_offers")
+        .select("id,application_id,partner_id,status,expires_at,principal_amount,total_repayment,term_months")
+        .eq("id", offerId).maybeSingle();
+      if (!offer) return fail("offer_not_found", 404, allowedOrigin);
+      const { data: application } = await admin.from("loan_applications")
+        .select("id,user_id,status").eq("id", offer.application_id).maybeSingle();
+      if (!application || application.user_id !== userId) return fail("offer_not_found", 404, allowedOrigin);
+      if (offer.status !== "offered" || application.status !== "offer_available") return fail("offer_no_longer_available", 409, allowedOrigin);
+      if (offer.expires_at && Date.parse(offer.expires_at) <= Date.now()) {
+        await admin.from("loan_offers").update({ status: "expired" }).eq("id", offerId).eq("status", "offered");
+        return fail("offer_expired", 409, allowedOrigin);
+      }
+      const { data: updatedOffer, error: updateOfferError } = await admin.from("loan_offers")
+        .update({ status: decision }).eq("id", offerId).eq("status", "offered")
+        .select("id,status,principal_amount,total_repayment,term_months").maybeSingle();
+      if (updateOfferError || !updatedOffer) return fail("offer_decision_conflict", 409, allowedOrigin);
+      const applicationStatus = decision === "accepted" ? "accepted_by_applicant" : "declined_by_applicant";
+      const { error: updateApplicationError } = await admin.from("loan_applications")
+        .update({ status: applicationStatus, updated_at: new Date().toISOString() }).eq("id", application.id);
+      if (updateApplicationError) return respond(500, { error: "offer_decided_but_application_update_failed", offer: updatedOffer }, allowedOrigin);
+      const actorReason = decision === "accepted" ? "Applicant accepted the written lender offer." : "Applicant declined the written lender offer.";
+      await audit(admin, userId, "respond_to_loan_offer", "loan_offer", offerId, actorReason, offer.partner_id, requestId);
+      return respond(200, {
+        ok: true,
+        offer: updatedOffer,
+        application_status: applicationStatus,
+        message: decision === "accepted"
+          ? "Offer acceptance recorded. The lender must complete agreement and disbursement steps."
+          : "Offer declined. No money was moved.",
+      }, allowedOrigin);
+    }
+
+    if (action === "respond_to_quote_request") {
+      if (!actorCanUseRole(role, ["insurer_officer"])) return fail("insurer_access_required", 403, allowedOrigin);
+      const quoteRequestId = textValue(body.quote_request_id, 80);
+      const nextStatus = textValue(body.status, 80);
+      const validStatuses = new Set(["under_review", "information_requested", "quote_available", "declined", "expired"]);
+      if (!quoteRequestId || !nextStatus || !validStatuses.has(nextStatus)) return fail("invalid_quote_request_or_status", 400, allowedOrigin);
+      if (["declined", "expired"].includes(nextStatus) && !validReason(body.reason)) return fail("decision_reason_required", 400, allowedOrigin);
+      const { data: quoteRequest } = await admin.from("insurance_quote_requests")
+        .select("id,product_id,status").eq("id", quoteRequestId).maybeSingle();
+      if (!quoteRequest?.product_id) return fail("quote_request_not_routed_to_insurer", 404, allowedOrigin);
+      const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", quoteRequest.product_id).maybeSingle();
+      if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
+      if (["accepted", "declined", "expired", "cancelled"].includes(quoteRequest.status)) return fail("quote_request_is_terminal", 409, allowedOrigin);
+      const update: Json = { status: nextStatus, decision_reason: reason, updated_at: new Date().toISOString() };
+      if (nextStatus === "quote_available") {
+        const quotedPremium = positiveNumber(body.quoted_premium);
+        const coverageMonths = Number(body.coverage_duration_months);
+        const quotedTerms = body.quoted_terms;
+        const expiry = textValue(body.quote_expires_at, 80);
+        if (!quotedPremium || !Number.isInteger(coverageMonths) || coverageMonths < 1 || coverageMonths > 120 ||
+            !quotedTerms || typeof quotedTerms !== "object" || Array.isArray(quotedTerms) ||
+            !expiry || Number.isNaN(Date.parse(expiry)) || Date.parse(expiry) <= Date.now()) {
+          return fail("quote_requires_premium_duration_terms_and_future_expiry", 400, allowedOrigin);
+        }
+        update.quoted_premium = quotedPremium;
+        update.coverage_duration_months = coverageMonths;
+        update.quoted_terms = quotedTerms;
+        update.quote_expires_at = expiry;
+      }
+      const { error } = await admin.from("insurance_quote_requests").update(update).eq("id", quoteRequestId);
+      if (error) return fail("quote_request_update_failed", 500, allowedOrigin);
+      await audit(admin, userId, "respond_to_quote_request", "insurance_quote_request", quoteRequestId, reason, product.partner_id, requestId);
+      return respond(200, { ok: true, quote_request_id: quoteRequestId, status: nextStatus }, allowedOrigin);
+    }
+
+    if (action === "accept_insurance_quote") {
+      const quoteRequestId = textValue(body.quote_request_id, 80);
+      const acceptedReason = validReason(body.reason);
+      if (!quoteRequestId || !acceptedReason) return fail("quote_request_id_and_reason_required", 400, allowedOrigin);
+      const { data: quoteRequest } = await admin.from("insurance_quote_requests")
+        .select("id,user_id,motorcycle_id,product_id,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at")
+        .eq("id", quoteRequestId).maybeSingle();
+      if (!quoteRequest || quoteRequest.user_id !== userId) return fail("quote_request_not_found", 404, allowedOrigin);
+      if (quoteRequest.status === "accepted") {
+        const { data: priorPolicy } = await admin.from("insurance_policies").select("id,status,policy_number,coverage_start,coverage_end")
+          .eq("user_id", userId).contains("terms", { quote_request_id: quoteRequestId }).maybeSingle();
+        if (priorPolicy) return respond(200, { ok: true, idempotent: true, policy: priorPolicy }, allowedOrigin);
+      }
+      if (quoteRequest.status !== "quote_available" || !quoteRequest.product_id || !quoteRequest.quoted_premium || !quoteRequest.coverage_duration_months) {
+        return fail("quote_not_available_for_acceptance", 409, allowedOrigin);
+      }
+      if (quoteRequest.quote_expires_at && Date.parse(quoteRequest.quote_expires_at) <= Date.now()) {
+        return fail("quote_expired", 409, allowedOrigin);
+      }
+      const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", quoteRequest.product_id).maybeSingle();
+      if (!product) return fail("insurance_product_not_found", 404, allowedOrigin);
+      const { data: priorPolicy } = await admin.from("insurance_policies").select("id,status,policy_number,coverage_start,coverage_end")
+        .eq("user_id", userId).contains("terms", { quote_request_id: quoteRequestId }).maybeSingle();
+      let policy = priorPolicy;
+      if (!policy) {
+        const { data: newPolicy, error } = await admin.from("insurance_policies").insert({
+          user_id: userId,
+          motorcycle_id: quoteRequest.motorcycle_id,
+          product_id: quoteRequest.product_id,
+          status: "awaiting_payment",
+          terms: {
+            quote_request_id: quoteRequestId,
+            quoted_premium: quoteRequest.quoted_premium,
+            coverage_duration_months: quoteRequest.coverage_duration_months,
+            quote_terms: quoteRequest.quoted_terms,
+            quote_expires_at: quoteRequest.quote_expires_at,
+          },
+        }).select("id,status,policy_number,coverage_start,coverage_end").single();
+        if (error || !newPolicy) return fail("pending_policy_create_failed", 500, allowedOrigin);
+        policy = newPolicy;
+      }
+      const { error: requestUpdateError } = await admin.from("insurance_quote_requests")
+        .update({ status: "accepted", decision_reason: acceptedReason, updated_at: new Date().toISOString() })
+        .eq("id", quoteRequestId).eq("user_id", userId);
+      if (requestUpdateError) return respond(500, { error: "policy_created_quote_update_failed", policy_id: policy.id }, allowedOrigin);
+      await audit(admin, userId, "accept_insurance_quote", "insurance_quote_request", quoteRequestId, acceptedReason, product.partner_id, requestId);
+      return respond(201, { ok: true, policy, coverage_active: false, message: "Quote accepted. Policy remains pending payment and does not mean coverage is active." }, allowedOrigin);
+    }
+
+    if (action === "decline_insurance_quote") {
+      const quoteRequestId = textValue(body.quote_request_id, 80);
+      if (!quoteRequestId) return fail("quote_request_id_required", 400, allowedOrigin);
+      const { data: quoteRequest } = await admin.from("insurance_quote_requests")
+        .select("id,user_id,status,product_id").eq("id", quoteRequestId).maybeSingle();
+      if (!quoteRequest || quoteRequest.user_id !== userId) return fail("quote_request_not_found", 404, allowedOrigin);
+      if (quoteRequest.status !== "quote_available") return fail("quote_not_available_for_decline", 409, allowedOrigin);
+      const { error } = await admin.from("insurance_quote_requests")
+        .update({ status: "declined", decision_reason: "Applicant declined the quote.", updated_at: new Date().toISOString() })
+        .eq("id", quoteRequestId).eq("user_id", userId);
+      if (error) return fail("quote_decline_failed", 500, allowedOrigin);
+      const organizationId = quoteRequest.product_id
+        ? (await admin.from("insurance_products").select("partner_id").eq("id", quoteRequest.product_id).maybeSingle()).data?.partner_id || null
+        : null;
+      await audit(admin, userId, "decline_insurance_quote", "insurance_quote_request", quoteRequestId, "Applicant declined the quote.", organizationId, requestId);
+      return respond(200, { ok: true, quote_request_id: quoteRequestId, status: "declined" }, allowedOrigin);
     }
 
     if (action === "update_loan_status") {

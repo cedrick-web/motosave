@@ -35,9 +35,14 @@ const saved = (rows: SavingsTransaction[]) => rows.reduce((sum, item) => sum + N
 
 type MaintenanceRecord = { id: string; motorcycle_id: string; service_date: string; description: string; amount: number; odometer_km: number | null; next_service_date: string | null; created_at: string };
 type InsuranceClaim = { id: string; policy_id: string; incident_date: string; description: string; status: string; created_at: string };
+type LoanProduct = { id: string; name: string; description: string | null; purpose: string; min_amount: number | null; max_amount: number | null; min_term_months: number | null; max_term_months: number | null; published_terms: Record<string, unknown> };
+type LoanOffer = { id: string; application_id: string; principal_amount: number; interest_rate: number; interest_basis: string; fees: number; term_months: number; payment_frequency: string; total_repayment: number; terms: Record<string, unknown>; status: string; expires_at: string | null; created_at: string };
+type Installment = { id: string; loan_application_id: string; installment_number: number; due_date: string; principal_due: number; interest_due: number; fees_due: number; total_due: number; amount_paid: number; status: string };
+type InsuranceProduct = { id: string; name: string; description: string | null; coverage_type: string; supports_monthly_payments: boolean; terms: Record<string, unknown> };
+type QuoteRequest = { id: string; motorcycle_id: string | null; product_id: string | null; notes: string | null; status: string; quoted_premium: number | null; coverage_duration_months: number | null; quoted_terms: Record<string, unknown>; quote_expires_at: string | null; decision_reason: string | null; created_at: string };
 type MotorcycleDocument = { id: string; motorcycle_id: string; document_type: string; storage_path: string; expires_on: string | null; verification_status: string; created_at: string };
-type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; quote_notes: string; service_date: string; service_description: string; service_amount: string; odometer_km: string; next_service_date: string; claim_policy_id: string; incident_date: string; incident_description: string };
-const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', quote_notes: '', service_date: new Date().toISOString().slice(0, 10), service_description: '', service_amount: '', odometer_km: '', next_service_date: '', claim_policy_id: '', incident_date: new Date().toISOString().slice(0, 10), incident_description: '' };
+type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; loan_product_id: string; quote_product_id: string; quote_notes: string; service_date: string; service_description: string; service_amount: string; odometer_km: string; next_service_date: string; claim_policy_id: string; incident_date: string; incident_description: string };
+const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', loan_product_id: '', quote_product_id: '', quote_notes: '', service_date: new Date().toISOString().slice(0, 10), service_description: '', service_amount: '', odometer_km: '', next_service_date: '', claim_policy_id: '', incident_date: new Date().toISOString().slice(0, 10), incident_description: '' };
 
 export default function App() {
   const [activeNav, setActiveNav] = useState<NavId>('overview');
@@ -60,6 +65,11 @@ export default function App() {
   const [maintenanceRecords, setMaintenanceRecords] = useState<MaintenanceRecord[]>(() => isSupabaseConfigured ? [] : readStore('motosave.maintenance', []));
   const [insuranceClaims, setInsuranceClaims] = useState<InsuranceClaim[]>(() => isSupabaseConfigured ? [] : readStore('motosave.claims', []));
   const [motorcycleDocuments, setMotorcycleDocuments] = useState<MotorcycleDocument[]>(() => isSupabaseConfigured ? [] : readStore('motosave.documents', []));
+  const [loanProducts, setLoanProducts] = useState<LoanProduct[]>([]);
+  const [loanOffers, setLoanOffers] = useState<LoanOffer[]>([]);
+  const [installments, setInstallments] = useState<Installment[]>([]);
+  const [insuranceProducts, setInsuranceProducts] = useState<InsuranceProduct[]>([]);
+  const [quoteRequests, setQuoteRequests] = useState<QuoteRequest[]>([]);
   const [notificationsCount, setNotificationsCount] = useState(2);
 
   const notify = useCallback((message: string) => {
@@ -85,7 +95,7 @@ export default function App() {
   const loadLiveData = useCallback(async () => {
     if (!supabase || !session?.user.id) return;
     const userId = session.user.id;
-    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, maintenanceResult, claimsResult, documentsResult] = await Promise.all([
+    const [profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, notificationResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult] = await Promise.all([
       supabase.from('profiles').select('full_name,role,preferred_language').eq('id', userId).maybeSingle(),
       supabase.from('savings_goals').select('*').order('created_at', { ascending: false }),
       supabase.from('savings_transactions').select('*').order('created_at', { ascending: false }).limit(100),
@@ -96,6 +106,9 @@ export default function App() {
       supabase.from('maintenance_records').select('id,motorcycle_id,service_date,description,amount,odometer_km,next_service_date,created_at').order('service_date', { ascending: false }).limit(100),
       supabase.from('insurance_claims').select('id,policy_id,incident_date,description,status,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('motorcycle_documents').select('id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('loan_products').select('id,name,description,purpose,min_amount,max_amount,min_term_months,max_term_months,published_terms').order('created_at', { ascending: false }),
+      supabase.from('insurance_products').select('id,name,description,coverage_type,supports_monthly_payments,terms').order('created_at', { ascending: false }),
+      supabase.from('insurance_quote_requests').select('id,motorcycle_id,product_id,notes,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at,decision_reason,created_at').order('created_at', { ascending: false }).limit(100),
     ]);
     if (profileResult.data) {
       setProfileName(profileResult.data.full_name || 'MotoSave rider');
@@ -110,6 +123,9 @@ export default function App() {
     if (maintenanceResult.data) setMaintenanceRecords(maintenanceResult.data as MaintenanceRecord[]);
     if (claimsResult.data) setInsuranceClaims(claimsResult.data as InsuranceClaim[]);
     if (documentsResult.data) setMotorcycleDocuments(documentsResult.data as MotorcycleDocument[]);
+    if (loanProductsResult.data) setLoanProducts(loanProductsResult.data as LoanProduct[]);
+    if (insuranceProductsResult.data) setInsuranceProducts(insuranceProductsResult.data as InsuranceProduct[]);
+    if (quoteRequestsResult.data) setQuoteRequests(quoteRequestsResult.data as QuoteRequest[]);
     if (notificationResult.data) setNotificationsCount(notificationResult.data.length);
     const policyIds = (policyResult.data || []).map((policy) => policy.id);
     if (policyIds.length) {
@@ -118,7 +134,18 @@ export default function App() {
     } else {
       setPremiums([]);
     }
-    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, maintenanceResult, claimsResult, documentsResult].some((result) => result.error)) {
+    const loanIds = (loanResult.data || []).map((loan) => loan.id);
+    if (loanIds.length) {
+      const [offersResult, installmentResult] = await Promise.all([
+        supabase.from('loan_offers').select('id,application_id,principal_amount,interest_rate,interest_basis,fees,term_months,payment_frequency,total_repayment,terms,status,expires_at,created_at').in('application_id', loanIds).order('created_at', { ascending: false }),
+        supabase.from('repayment_installments').select('id,loan_application_id,installment_number,due_date,principal_due,interest_due,fees_due,total_due,amount_paid,status').in('loan_application_id', loanIds).order('due_date', { ascending: true }),
+      ]);
+      if (offersResult.data) setLoanOffers(offersResult.data as LoanOffer[]);
+      if (installmentResult.data) setInstallments(installmentResult.data as Installment[]);
+    } else {
+      setLoanOffers([]); setInstallments([]);
+    }
+    if ([profileResult, goalResult, transactionResult, motorcycleResult, loanResult, policyResult, maintenanceResult, claimsResult, documentsResult, loanProductsResult, insuranceProductsResult, quoteRequestsResult].some((result) => result.error)) {
       notify('Some information could not be loaded. Check your Supabase migration and access policies.');
     }
   }, [session?.user.id, notify]);
@@ -189,7 +216,7 @@ export default function App() {
         }
         notify('Motorcycle added to your records.');
       } else if (modal === 'loan') {
-        const payload = { purpose: form.loan_purpose, requested_amount: Number(form.requested_amount), term_months: Number(form.term_months), notes: form.note.trim() || null };
+        const payload = { purpose: form.loan_purpose, product_id: form.loan_product_id || null, requested_amount: Number(form.requested_amount), term_months: Number(form.term_months), notes: form.note.trim() || null };
         if (!Number.isFinite(payload.requested_amount) || payload.requested_amount <= 0 || !Number.isInteger(payload.term_months) || payload.term_months < 1 || payload.term_months > 120) throw new Error('Enter a valid amount and a term between 1 and 120 months.');
         if (supabase && session) {
           const { data, error } = await supabase.from('loan_applications').insert({ ...payload, user_id: session.user.id }).select('*').single();
@@ -209,7 +236,7 @@ export default function App() {
           next_service_date: form.next_service_date || null,
         };
         if (!payload.motorcycle_id) throw new Error('Choose a motorcycle for this service record.');
-        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(payload.service_date) || Number.isNaN(Date.parse(payload.service_date))) throw new Error('Enter a valid service date in YYYY-MM-DD format.');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.service_date) || Number.isNaN(Date.parse(payload.service_date))) throw new Error('Enter a valid service date in YYYY-MM-DD format.');
         if (payload.description.length < 3) throw new Error('Describe the maintenance or repair in at least three characters.');
         if (!Number.isFinite(payload.amount) || payload.amount < 0) throw new Error('Service cost must be a non-negative number.');
         if (payload.odometer_km !== null && (!Number.isInteger(payload.odometer_km) || payload.odometer_km < 0)) throw new Error('Odometer must be a non-negative whole number.');
@@ -224,7 +251,7 @@ export default function App() {
       } else if (modal === 'claim') {
         const payload = { policy_id: form.claim_policy_id, incident_date: form.incident_date, description: form.incident_description.trim() };
         if (!payload.policy_id) throw new Error('Choose the policy linked to this claim.');
-        if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(payload.incident_date) || Number.isNaN(Date.parse(payload.incident_date))) throw new Error('Enter a valid incident date in YYYY-MM-DD format.');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.incident_date) || Number.isNaN(Date.parse(payload.incident_date))) throw new Error('Enter a valid incident date in YYYY-MM-DD format.');
         if (payload.description.length < 10) throw new Error('Describe the incident in at least 10 characters.');
         if (supabase && session) {
           const { data, error } = await supabase.from('insurance_claims').insert({ ...payload, user_id: session.user.id }).select('*').single();
@@ -236,9 +263,11 @@ export default function App() {
         notify('Claim submitted for insurer review. It is not an acceptance or settlement decision.');
       } else if (modal === 'quote') {
         if (supabase && session) {
-          const { error } = await supabase.from('insurance_quote_requests').insert({ user_id: session.user.id, motorcycle_id: form.motorcycle_id || null, product_id: null, notes: form.quote_notes.trim() || null });
+          const { data, error } = await supabase.from('insurance_quote_requests').insert({ user_id: session.user.id, motorcycle_id: form.motorcycle_id || null, product_id: form.quote_product_id || null, notes: form.quote_notes.trim() || null }).select('id,motorcycle_id,product_id,notes,status,quoted_premium,coverage_duration_months,quoted_terms,quote_expires_at,decision_reason,created_at').single();
+          if (!error && data) setQuoteRequests((rows) => [data as QuoteRequest, ...rows]);
           if (error) throw error;
         }
+        if (demoWorkspace) setQuoteRequests((rows) => [{ id: 'demo-quote-' + Date.now(), motorcycle_id: form.motorcycle_id || null, product_id: form.quote_product_id || null, notes: form.quote_notes.trim() || null, status: 'submitted_demo', quoted_premium: null, coverage_duration_months: null, quoted_terms: {}, quote_expires_at: null, decision_reason: null, created_at: new Date().toISOString() }, ...rows]);
         notify(demoWorkspace ? 'Demo quote request recorded. No policy has been issued.' : 'Quote request submitted. The insurer must provide an actual quote.');
       }
       setModal(null);
@@ -302,6 +331,54 @@ export default function App() {
     window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   }
 
+  async function respondToLoanOffer(offer: LoanOffer, decision: 'accepted' | 'declined') {
+    if (offer.status !== 'offered') { notify('This offer is no longer available.'); return; }
+    if (offer.expires_at && Date.parse(offer.expires_at) <= Date.now()) { notify('This offer has expired. Ask the lender whether it can be renewed.'); return; }
+    if (supabase && session && !demoWorkspace) {
+      try {
+        const { data, error } = await supabase.functions.invoke('partner-operations', {
+          body: { action: 'respond_to_loan_offer', offer_id: offer.id, decision },
+        });
+        if (error) throw error;
+        if (data?.error) throw new Error(String(data.error));
+        notify(decision === 'accepted' ? 'Offer acceptance recorded. The lender still needs to complete the agreement and disbursement.' : 'Offer declined. No money was moved.');
+        void loadLiveData();
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'The offer decision could not be saved.');
+      }
+    } else {
+      setLoanOffers((rows) => rows.map((row) => row.id === offer.id ? { ...row, status: decision } : row));
+      notify('Demo offer decision saved locally. No loan was approved or disbursed.');
+    }
+  }
+
+  async function acceptInsuranceQuote(quote: QuoteRequest) {
+    if (!quote.product_id || quote.status !== 'quote_available') {
+      notify('Only a quote issued by a participating insurer can be accepted.');
+      return;
+    }
+    if (quote.quote_expires_at && Date.parse(quote.quote_expires_at) < Date.now()) {
+      notify('This quote has expired. Request a fresh quote from the insurer.');
+      return;
+    }
+    if (supabase && session && !demoWorkspace) {
+      try {
+        const { data, error } = await supabase.functions.invoke('partner-operations', {
+          body: { action: 'accept_insurance_quote', quote_request_id: quote.id, reason: 'Applicant accepted the issued insurance quote.' },
+        });
+        if (error) throw error;
+        if (data?.error) throw new Error(String(data.error));
+        notify('Quote accepted. A pending-payment policy record was created; cover is not active yet.');
+        void loadLiveData();
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'The quote could not be accepted.');
+      }
+    } else {
+      setQuoteRequests((rows) => rows.map((row) => row.id === quote.id ? { ...row, status: 'accepted_demo' } : row));
+      notify('Demo quote acceptance recorded. No policy or coverage was issued.');
+    }
+  }
+
   async function signOut() { if (supabase) { await supabase.auth.signOut(); setSession(null); } }
   async function markPremiumPaid(premium: Premium) {
     if (isSupabaseConfigured) {
@@ -357,8 +434,8 @@ export default function App() {
         {demoWorkspace && <div className="demo-banner"><div className="demo-banner-icon"><Sparkles size={17} /></div><div><b>Demo workspace</b><span>Sample records are fictional and saved in this browser only. No money moves and no real insurance coverage is created.</span></div><span className="demo-tag">DEMO DATA</span></div>}
         {activeNav === 'overview' && <Overview goals={goals} transactions={transactions} motorcycles={motorcycles} loans={loans} policies={policies} upcomingPremium={upcomingPremium} totalTracked={totalTracked} verifiedTotal={verifiedTotal} progress={goalProgress} onCreateGoal={() => openModal('goal')} onAddContribution={() => openModal('contribution')} onApplyLoan={() => openModal('loan')} onQuote={() => openModal('quote')} onPayPremium={markPremiumPaid} onNavigate={setActiveNav} />}
         {activeNav === 'savings' && <SavingsPage goals={goals} transactions={transactions} progress={goalProgress} onCreateGoal={() => openModal('goal')} onAddContribution={() => openModal('contribution')} totalTracked={totalTracked} verifiedTotal={verifiedTotal} />}
-        {activeNav === 'financing' && <FinancingPage loans={loans} onApply={() => openModal('loan')} />}
-        {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} claims={insuranceClaims} onQuote={() => openModal('quote')} onClaim={() => openModal('claim')} onPayPremium={markPremiumPaid} />}
+        {activeNav === 'financing' && <FinancingPage loans={loans} products={loanProducts} offers={loanOffers} installments={installments} onApply={() => openModal('loan')} onRespondOffer={respondToLoanOffer} />}
+        {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} claims={insuranceClaims} quoteRequests={quoteRequests} products={insuranceProducts} onQuote={() => openModal('quote')} onClaim={() => openModal('claim')} onAcceptQuote={acceptInsuranceQuote} onPayPremium={markPremiumPaid} />}
         {activeNav === 'motorcycles' && <MotorcyclesPage motorcycles={motorcycles} maintenanceRecords={maintenanceRecords} documents={motorcycleDocuments} demo={demoWorkspace} onAdd={() => openModal('motorcycle')} onMaintenance={() => openModal('maintenance')} onUploadDocument={uploadMotorcycleDocument} onOpenDocument={openMotorcycleDocument} />}
         {activeNav === 'activity' && <ActivityPage transactions={transactions} loans={loans} premiums={premiums} searchQuery={searchQuery} />}
         {activeNav === 'operations' && <OperationsConsole demo={demoWorkspace} onNotify={notify} />}
@@ -368,7 +445,7 @@ export default function App() {
       <footer className="footer"><span>© 2026 MotoSave</span><span><ShieldCheck size={14} /> Your records, treated with care</span><span>Built for Rwanda <span className="footer-dot">•</span> RWF</span></footer>
     </main>
 
-    <AnimatePresence>{modal && <ActionModal kind={modal} form={form} setForm={setForm} onSubmit={submitModal} onClose={() => setModal(null)} goals={goals} motorcycles={motorcycles} policies={policies} />}</AnimatePresence>
+    <AnimatePresence>{modal && <ActionModal kind={modal} form={form} setForm={setForm} onSubmit={submitModal} onClose={() => setModal(null)} goals={goals} motorcycles={motorcycles} policies={policies} loanProducts={loanProducts} insuranceProducts={insuranceProducts} />}</AnimatePresence>
     <AnimatePresence>{toast && <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }} className="toast"><CheckCircle2 size={18} /><span>{toast}</span><button onClick={() => setToast('')} aria-label="Dismiss message"><X size={15} /></button></motion.div>}</AnimatePresence>
   </div>;
 }
@@ -470,19 +547,31 @@ function SavingsPage({ goals, transactions, progress, onCreateGoal, onAddContrib
   </div>;
 }
 
-function FinancingPage({ loans, onApply }: { loans: LoanApplication[]; onApply: () => void }) {
+function FinancingPage({ loans, products, offers, installments, onApply, onRespondOffer }: { loans: LoanApplication[]; products: LoanProduct[]; offers: LoanOffer[]; installments: Installment[]; onApply: () => void; onRespondOffer: (offer: LoanOffer, decision: 'accepted' | 'declined') => void }) {
   return <div className="section-stack"><div className="financing-hero"><div><span className="eyebrow light-eyebrow">RESPONSIBLE FINANCING</span><h2>Find a path forward,<br />with the terms in view.</h2><p>Prepare applications, track partner updates, and review the full cost before accepting any offer.</p><button className="button button-white" onClick={onApply}><Plus size={16} /> Start an application</button></div><div className="financing-hero-art"><HandCoins size={88} strokeWidth={1.1} /><span className="floating-number">RWF</span></div></div>
     <div className="info-callout"><ShieldAlert size={19} /><div><b>Applications are not approvals</b><span>A participating lender makes credit decisions and provides binding terms. MotoSave does not guarantee eligibility or approval.</span></div></div>
+    <div className="section-toolbar"><div><h3>Published financing products <span className="count-pill">{products.length}</span></h3><p>Products are shown only when the partner organization and listing are published.</p></div><button className="button button-primary" onClick={onApply}><Plus size={16} /> New application</button></div>
+    {products.length ? <div className="product-grid">{products.map((product) => <article className="product-card" key={product.id}><span className="product-icon"><HandCoins size={19}/></span><h3>{product.name}</h3><p>{product.description || 'Partner financing product. Confirm all written terms with the lender.'}</p><div className="product-terms"><span>Amount</span><b>{product.min_amount ? fmt(Number(product.min_amount)) : 'By assessment'} to {product.max_amount ? fmt(Number(product.max_amount)) : 'By assessment'}</b></div><div className="product-terms"><span>Term</span><b>{product.min_term_months || 1} to {product.max_term_months || 120} months</b></div><button className="button button-secondary button-wide" onClick={onApply}>Apply for this product <ArrowRight size={14}/></button></article>)}</div> : <div className="info-callout"><AlertCircle size={18}/><div><b>No published financing products yet</b><span>You can save a general application, but it will not enter a specific lender's queue until a verified partner publishes a product and the request is routed to it.</span></div></div>}
     <div className="section-toolbar"><div><h3>Your applications <span className="count-pill">{loans.length}</span></h3><p>Track the status of each request.</p></div><button className="button button-primary" onClick={onApply}><Plus size={16} /> New application</button></div>
     {loans.length ? <div className="application-list">{loans.map((loan) => <article className="application-card" key={loan.id}><div className="application-icon"><HandCoins size={22} /></div><div className="application-main"><b>{loanPurpose(loan.purpose)}</b><span>Requested {fmt(Number(loan.requested_amount))} · {loan.term_months} months</span><small>Submitted {fmtDate(loan.created_at)}</small></div><span className={'status-pill ' + statusTone(loan.status)}>{loan.status.replaceAll('_', ' ')}</span><button className="icon-button pale-icon" aria-label="View application"><ArrowRight size={17} /></button></article>)}</div> : <EmptyCard title="No financing requests yet" description="Prepare a request with an amount and a repayment term. A lender will need to assess it." action="Start application" onClick={onApply} />}
+    <section className="panel"><div className="panel-heading"><div><h3>Lender offers <span className="count-pill">{offers.length}</span></h3><p>Review total repayment, interest basis, fees, term, and expiry before making a decision.</p></div><BadgeCheck size={19} className="subtle-icon" /></div>
+      {offers.map((offer) => <article className="offer-summary-card" key={offer.id}><div className="offer-summary-top"><b>Offer for {loanPurpose(loans.find(loan=>loan.id===offer.application_id)?.purpose || 'financing')}</b><span className={'status-pill '+statusTone(offer.status)}>{offer.status.replaceAll('_',' ')}</span></div><div className="offer-summary-grid"><div><small>Principal</small><b>{fmt(Number(offer.principal_amount))}</b></div><div><small>Total repayment</small><b>{fmt(Number(offer.total_repayment))}</b></div><div><small>Fees</small><b>{fmt(Number(offer.fees))}</b></div><div><small>Term</small><b>{offer.term_months} months</b></div><div><small>Rate</small><b>{offer.interest_rate} · {offer.interest_basis.replaceAll('_',' ')}</b></div><div><small>Frequency</small><b>{offer.payment_frequency}</b></div></div><p className="offer-expiry">Expiry: {fmtDate(offer.expires_at)}. Ask the lender to clarify any term you do not understand.</p>{offer.status==='offered'&&<div className="offer-decision-buttons"><button className="button button-primary" onClick={()=>onRespondOffer(offer,'accepted')}>Accept offer</button><button className="button button-quiet" onClick={()=>onRespondOffer(offer,'declined')}>Decline offer</button></div>}</article>)}
+      {!offers.length&&<div className="compact-empty">No written lender offers are available yet.</div>}
+    </section>
+    <section className="panel table-panel"><div className="panel-heading"><div><h3>Repayment schedule <span className="count-pill">{installments.length}</span></h3><p>Installment states are supplied by the lender. No payment is confirmed from this screen.</p></div><Clock3 size={18} className="subtle-icon"/></div><div className="table-scroll"><table><thead><tr><th>Due date</th><th>Application</th><th>Installment</th><th>Status</th><th className="right">Amount due</th></tr></thead><tbody>{installments.map((installment)=><tr key={installment.id}><td>{fmtDate(installment.due_date)}</td><td><b>{loans.find(loan=>loan.id===installment.loan_application_id)?.purpose || 'Financing'}</b></td><td>{installment.installment_number}</td><td><span className={'status-pill '+statusTone(installment.status)}>{installment.status.replaceAll('_',' ')}</span></td><td className="right amount-cell">{fmt(Number(installment.total_due))}</td></tr>)}</tbody></table></div>{!installments.length&&<div className="compact-empty">Installments appear after a lender accepts the offer and creates a schedule.</div>}</section>
     <section className="panel"><div className="panel-heading"><div><h3>Before you accept an offer</h3><p>Look beyond the headline interest rate.</p></div><FileCheck2 size={20} className="subtle-icon" /></div><div className="checklist-grid"><ChecklistItem title="Total repayment" text="Review the full amount you would repay." /><ChecklistItem title="Installment schedule" text="Check each amount and its due date." /><ChecklistItem title="Fees and conditions" text="Understand charges, late payment rules, and exclusions." /><ChecklistItem title="Provider identity" text="Confirm the lender and the official agreement." /></div></section>
   </div>;
 }
 function ChecklistItem({ title, text }: { title: string; text: string }) { return <div className="checklist-item"><CheckCircle2 size={18} /><div><b>{title}</b><span>{text}</span></div></div>; }
 
-function InsurancePage({ policies, premiums, motorcycles, claims, onQuote, onClaim, onPayPremium }: { policies: Policy[]; premiums: Premium[]; motorcycles: Motorcycle[]; claims: InsuranceClaim[]; onQuote: () => void; onClaim: () => void; onPayPremium: (premium: Premium) => void }) {
+function InsurancePage({ policies, premiums, motorcycles, claims, quoteRequests, products, onQuote, onClaim, onAcceptQuote, onPayPremium }: { policies: Policy[]; premiums: Premium[]; motorcycles: Motorcycle[]; claims: InsuranceClaim[]; quoteRequests: QuoteRequest[]; products: InsuranceProduct[]; onQuote: () => void; onClaim: () => void; onAcceptQuote: (quote: QuoteRequest) => void; onPayPremium: (premium: Premium) => void }) {
   return <div className="section-stack"><div className="insurance-hero"><div className="insurance-hero-icon"><ShieldCheck size={39} /></div><div><span className="eyebrow">PROTECT YOUR LIVELIHOOD</span><h2>Insurance information, without the guesswork.</h2><p>Track policy records and upcoming premiums. Policy status must be confirmed by the responsible insurer.</p></div><div className="toolbar-actions"><button className="button button-secondary" onClick={onClaim}><FileCheck2 size={16} /> Submit a claim</button><button className="button button-primary" onClick={onQuote}><Plus size={16} /> Request a quote</button></div></div>
     <div className="info-callout"><AlertCircle size={19} /><div><b>A payment attempt is not active cover</b><span>Monthly installment schedules are shown only when the insurer supports them. Always confirm policy status and conditions with your insurer.</span></div></div>
+    <div className="section-toolbar"><div><h3>Published insurance products <span className="count-pill">{products.length}</span></h3><p>Coverage details and eligibility must be confirmed in the insurer's official terms.</p></div></div>
+    {products.length ? <div className="product-grid">{products.map(product=><article className="product-card" key={product.id}><span className="product-icon"><ShieldCheck size={19}/></span><h3>{product.name}</h3><p>{product.description || 'Insurance product. Read the official terms, exclusions, and eligibility requirements.'}</p><div className="product-terms"><span>Coverage type</span><b>{product.coverage_type.replaceAll('_',' ')}</b></div><div className="product-terms"><span>Payment plan</span><b>{product.supports_monthly_payments ? 'Monthly options supported by insurer' : 'Ask insurer for available payment options'}</b></div><button className="button button-secondary button-wide" onClick={onQuote}>Request a quote <ArrowRight size={14}/></button></article>)}</div> : <div className="info-callout"><AlertCircle size={18}/><div><b>No published insurance products yet</b><span>Verified insurers need to publish products before riders can request a product-specific quote.</span></div></div>}
+    <div className="section-toolbar"><div><h3>Your quote requests <span className="count-pill">{quoteRequests.length}</span></h3><p>An issued quote is not active cover. Acceptance creates a pending-payment record only.</p></div><button className="button button-primary" onClick={onQuote}><Plus size={15}/> Request a quote</button></div>
+    <div className="application-list">{quoteRequests.map(quote=><article className="application-card" key={quote.id}><div className="application-icon"><ShieldCheck size={21}/></div><div className="application-main"><b>{products.find(product=>product.id===quote.product_id)?.name || 'General quote request'}</b><span>{quote.quoted_premium ? fmt(Number(quote.quoted_premium)) + ' quoted premium' : 'Premium not quoted yet'}{quote.coverage_duration_months ? ' · ' + quote.coverage_duration_months + ' months' : ''}</span><small>Requested {fmtDate(quote.created_at)}{quote.quote_expires_at ? ' · Expires '+fmtDate(quote.quote_expires_at) : ''}</small>{quote.decision_reason&&<small>{quote.decision_reason}</small>}</div><span className={'status-pill '+statusTone(quote.status)}>{quote.status.replaceAll('_',' ')}</span>{quote.status==='quote_available'&&<button className="button button-primary" onClick={()=>onAcceptQuote(quote)}>Accept quote <ArrowRight size={14}/></button>}</article>)}</div>
+    {!quoteRequests.length&&<div className="compact-empty">No quote requests yet.</div>}
     <div className="section-toolbar"><div><h3>Policy records <span className="count-pill">{policies.length}</span></h3><p>Connected records or explicitly labeled demo records.</p></div></div>
     <div className="policy-grid">{policies.map((policy) => <article className="policy-card" key={policy.id}><div className="policy-card-top"><span className="policy-brand"><ShieldCheck size={21} /></span><span className={'status-pill ' + (policy.status === 'active' ? 'success' : policy.status === 'demo_active' ? 'warning' : 'neutral')}>{policy.status.replaceAll('_', ' ')}</span></div><span className="eyebrow">POLICY REFERENCE</span><h3>{policy.policy_number || 'Pending partner reference'}</h3><div className="policy-detail"><span>Motorcycle</span><b>{motorcycles.find((bike) => bike.id === policy.motorcycle_id)?.registration_number || 'Not linked'}</b></div><div className="policy-detail"><span>Coverage end date</span><b>{fmtDate(policy.coverage_end)}</b></div><p className="small muted">Confirm coverage and all exclusions directly with the insurer.</p></article>)}</div>
     {!policies.length && <EmptyCard title="No policy records yet" description="Request a quote from a participating insurer and track the response here." action="Request a quote" onClick={onQuote} />}
@@ -599,15 +688,15 @@ function EmptyCard({ title, description, action, onClick }: { title: string; des
   return <div className="empty-card"><span className="empty-illustration"><Sparkles size={30} /></span><h3>{title}</h3><p>{description}</p><button className="button button-primary" onClick={onClick}>{action} <ArrowRight size={15} /></button></div>;
 }
 
-function ActionModal({ kind, form, setForm, onSubmit, onClose, goals, motorcycles, policies }: { kind: Exclude<ModalId, null>; form: FormState; setForm: (form: FormState) => void; onSubmit: (e: FormEvent) => void; onClose: () => void; goals: Goal[]; motorcycles: Motorcycle[]; policies: Policy[] }) {
+function ActionModal({ kind, form, setForm, onSubmit, onClose, goals, motorcycles, policies, loanProducts, insuranceProducts }: { kind: Exclude<ModalId, null>; form: FormState; setForm: (form: FormState) => void; onSubmit: (e: FormEvent) => void; onClose: () => void; goals: Goal[]; motorcycles: Motorcycle[]; policies: Policy[]; loanProducts: LoanProduct[]; insuranceProducts: InsuranceProduct[] }) {
   const update = (key: keyof FormState, value: string) => setForm({ ...form, [key]: value });
   const titles: Record<Exclude<ModalId, null>, string> = { goal: 'Create a savings goal', contribution: 'Record a contribution', loan: 'Start a financing request', motorcycle: 'Add a motorcycle', quote: 'Request an insurance quote', maintenance: 'Log motorcycle maintenance', claim: 'Submit an insurance claim' };
   return <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><motion.div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" initial={{ opacity: 0, y: 16, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 12 }} transition={{ duration: 0.18 }}><div className="modal-heading"><div><span className="eyebrow">MOTOSAVE WORKSPACE</span><h2 id="modal-title">{titles[kind]}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><form className="form-stack modal-form" onSubmit={onSubmit}>
     {kind === 'goal' && <><label>Goal name<input autoFocus value={form.title} onChange={(e) => update('title', e.target.value)} required minLength={2} placeholder="e.g. Emergency reserve" /></label><div className="form-row"><label>Target amount (RWF)<input type="number" min="1" step="1" value={form.target_amount} onChange={(e) => update('target_amount', e.target.value)} required placeholder="500000" /></label><label>Target date<input type="date" value={form.target_date} onChange={(e) => update('target_date', e.target.value)} /></label></div><div className="form-row"><label>Goal purpose<select value={form.purpose} onChange={(e) => update('purpose', e.target.value)}><option value="emergency">Emergency reserve</option><option value="maintenance">Motorcycle maintenance</option><option value="ownership">Motorcycle ownership</option><option value="insurance">Insurance premium</option><option value="business">Business growth</option><option value="custom">Other goal</option></select></label><label>Contribution plan<select value={form.frequency} onChange={(e) => update('frequency', e.target.value)}><option value="flexible">Flexible</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label></div></>}
     {kind === 'contribution' && <><label>Goal<select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)}><option value="">General contribution</option>{goals.map((goal) => <option value={goal.id} key={goal.id}>{goal.title}</option>)}</select></label><label>Amount (RWF)<input type="number" min="1" step="1" autoFocus value={form.amount} onChange={(e) => update('amount', e.target.value)} required placeholder="15000" /></label><label>Note<input value={form.note} onChange={(e) => update('note', e.target.value)} placeholder="Optional reminder for yourself" /></label><div className="inline-note"><AlertCircle size={16} /> This is a manual planning record. It does not prove money was deposited.</div></>}
     {kind === 'motorcycle' && <><label>Registration number<input autoFocus value={form.registration_number} onChange={(e) => update('registration_number', e.target.value)} required placeholder="RAA 123 A" /></label><div className="form-row"><label>Make<input value={form.make} onChange={(e) => update('make', e.target.value)} required placeholder="TVS" /></label><label>Model<input value={form.model} onChange={(e) => update('model', e.target.value)} required placeholder="HLX 125" /></label></div><label>Model year <span className="optional-label">Optional</span><input type="number" min="1980" max={new Date().getFullYear() + 1} value={form.year} onChange={(e) => update('year', e.target.value)} placeholder="2023" /></label></>}
-    {kind === 'loan' && <><label>Financing purpose<select value={form.loan_purpose} onChange={(e) => update('loan_purpose', e.target.value)}><option value="motorcycle_purchase">Motorcycle purchase</option><option value="electric_motorcycle">Electric motorcycle</option><option value="motorcycle_maintenance">Motorcycle maintenance</option><option value="business_expansion">Business expansion</option><option value="emergency">Emergency financing</option><option value="other">Other permitted purpose</option></select></label><div className="form-row"><label>Amount requested (RWF)<input type="number" min="1" step="1" autoFocus value={form.requested_amount} onChange={(e) => update('requested_amount', e.target.value)} required placeholder="350000" /></label><label>Term (months)<select value={form.term_months} onChange={(e) => update('term_months', e.target.value)}>{[3,6,9,12,18,24,36,48,60].map((n) => <option value={n} key={n}>{n} months</option>)}</select></label></div><label>Additional context <span className="optional-label">Optional</span><textarea rows={3} value={form.note} onChange={(e) => update('note', e.target.value)} placeholder="Describe what the financing is for." /></label><div className="inline-note"><ShieldAlert size={16} /> Submitting a request is not approval. A partner lender must assess the application and issue the real terms.</div></>}
-    {kind === 'quote' && <><label>Motorcycle <span className="optional-label">Optional</span><select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)}><option value="">Choose later / not linked</option>{motorcycles.map((bike) => <option value={bike.id} key={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label><label>Anything the insurer should know? <span className="optional-label">Optional</span><textarea rows={4} value={form.quote_notes} onChange={(e) => update('quote_notes', e.target.value)} placeholder="Share only details required to request a quote." /></label><div className="inline-note"><ShieldCheck size={16} /> A quote request is not a policy. The insurer must provide terms and confirm any coverage.</div></>}
+    {kind === 'loan' && <>{loanProducts.length ? <label>Published lender product<select value={form.loan_product_id} onChange={(e) => update('loan_product_id', e.target.value)}><option value="">General request (not routed)</option>{loanProducts.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select></label> : <div className="inline-note"><AlertCircle size={16}/> No published lender products are available. This request will be saved without partner routing.</div>}<label>Financing purpose<select value={form.loan_purpose} onChange={(e) => update('loan_purpose', e.target.value)}><option value="motorcycle_purchase">Motorcycle purchase</option><option value="electric_motorcycle">Electric motorcycle</option><option value="motorcycle_maintenance">Motorcycle maintenance</option><option value="business_expansion">Business expansion</option><option value="emergency">Emergency financing</option><option value="other">Other permitted purpose</option></select></label><div className="form-row"><label>Amount requested (RWF)<input type="number" min="1" step="1" autoFocus value={form.requested_amount} onChange={(e) => update('requested_amount', e.target.value)} required placeholder="350000" /></label><label>Term (months)<select value={form.term_months} onChange={(e) => update('term_months', e.target.value)}>{[3,6,9,12,18,24,36,48,60].map((n) => <option value={n} key={n}>{n} months</option>)}</select></label></div><label>Additional context <span className="optional-label">Optional</span><textarea rows={3} value={form.note} onChange={(e) => update('note', e.target.value)} placeholder="Describe what the financing is for." /></label><div className="inline-note"><ShieldAlert size={16} /> Submitting a request is not approval. A partner lender must assess the application and issue the real terms.</div></>}
+    {kind === 'quote' && <>{insuranceProducts.length ? <label>Insurance product<select value={form.quote_product_id} onChange={(e) => update('quote_product_id', e.target.value)}><option value="">General quote request (not routed)</option>{insuranceProducts.map((product) => <option key={product.id} value={product.id}>{product.name} · {product.coverage_type.replaceAll('_',' ')}</option>)}</select></label> : <div className="inline-note"><AlertCircle size={16}/> No published insurer products are available. This request will be saved without product routing.</div>}<label>Motorcycle <span className="optional-label">Optional</span><select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)}><option value="">Choose later / not linked</option>{motorcycles.map((bike) => <option value={bike.id} key={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label><label>Anything the insurer should know? <span className="optional-label">Optional</span><textarea rows={4} value={form.quote_notes} onChange={(e) => update('quote_notes', e.target.value)} placeholder="Share only details required to request a quote." /></label><div className="inline-note"><ShieldCheck size={16} /> A quote request is not a policy. The insurer must provide terms and confirm any coverage.</div></>}
     {kind === 'maintenance' && <><label>Motorcycle<select value={form.motorcycle_id} onChange={(e) => update('motorcycle_id', e.target.value)} required><option value="">Select a motorcycle</option>{motorcycles.map((bike) => <option key={bike.id} value={bike.id}>{bike.registration_number} · {bike.make} {bike.model}</option>)}</select></label><div className="form-row"><label>Service date<input type="date" value={form.service_date} onChange={(e) => update('service_date', e.target.value)} required /></label><label>Cost (RWF)<input type="number" min="0" step="1" value={form.service_amount} onChange={(e) => update('service_amount', e.target.value)} placeholder="0" /></label></div><label>Service or repair description<textarea rows={3} value={form.service_description} onChange={(e) => update('service_description', e.target.value)} minLength={3} maxLength={1000} required placeholder="e.g. oil change, brake pads, tire repair" /></label><div className="form-row"><label>Odometer (km) <span className="optional-label">Optional</span><input type="number" min="0" step="1" value={form.odometer_km} onChange={(e) => update('odometer_km', e.target.value)} placeholder="45000" /></label><label>Next service date <span className="optional-label">Optional</span><input type="date" value={form.next_service_date} onChange={(e) => update('next_service_date', e.target.value)} /></label></div></>}
     {kind === 'claim' && <><label>Policy record<select value={form.claim_policy_id} onChange={(e) => update('claim_policy_id', e.target.value)} required><option value="">Select a policy</option>{policies.map((policy) => <option key={policy.id} value={policy.id}>{policy.policy_number || policy.status} · {policy.status.replaceAll('_', ' ')}</option>)}</select></label><label>Incident date<input type="date" value={form.incident_date} onChange={(e) => update('incident_date', e.target.value)} required /></label><label>Describe the incident<textarea rows={4} value={form.incident_description} onChange={(e) => update('incident_description', e.target.value)} minLength={10} maxLength={5000} required placeholder="Describe when it happened and what occurred. Do not include unnecessary sensitive information." /></label><div className="inline-note"><ShieldAlert size={16} /> The insurer evaluates claims and decides coverage. This request is not a guarantee of acceptance or payment.</div></>}
     <div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>Cancel</button><button className="button button-primary" type="submit">{kind === 'goal' ? 'Create goal' : kind === 'contribution' ? 'Record entry' : kind === 'motorcycle' ? 'Save motorcycle' : kind === 'loan' ? 'Submit request' : kind === 'maintenance' ? 'Save service record' : kind === 'claim' ? 'Submit claim' : 'Send quote request'} <ArrowRight size={15} /></button></div>

@@ -13,6 +13,7 @@ type InsurancePolicy = {
   id: string; policy_number: string | null; status: string; coverage_start: string | null;
   coverage_end: string | null; provider_reference: string | null;
 };
+type InsuranceQuoteRequest = { id: string; user_id: string; product_id: string | null; motorcycle_id: string | null; notes: string | null; status: string; quoted_premium: number | null; coverage_duration_months: number | null; quoted_terms: Record<string, unknown>; quote_expires_at: string | null; decision_reason: string | null; created_at: string };
 type SupportTicket = {
   id: string; subject: string; category: string; description: string; status: string;
   priority: string; assigned_to: string | null; created_at: string;
@@ -22,6 +23,7 @@ type Queue = {
   loan_applications?: LoanApplication[];
   insurance_claims?: InsuranceClaim[];
   insurance_policies?: InsurancePolicy[];
+  insurance_quote_requests?: InsuranceQuoteRequest[];
   support_tickets?: SupportTicket[];
 };
 
@@ -48,6 +50,11 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const [providerReference, setProviderReference] = useState('');
   const [coverageStart, setCoverageStart] = useState('');
   const [coverageEnd, setCoverageEnd] = useState('');
+  const [quoteFor, setQuoteFor] = useState<InsuranceQuoteRequest | null>(null);
+  const [quotedPremium, setQuotedPremium] = useState('');
+  const [coverageMonths, setCoverageMonths] = useState('12');
+  const [quotedTerms, setQuotedTerms] = useState('{"coverage":"Describe the included cover","exclusions":[],"payment_conditions":"Confirm with insurer"}');
+  const [quoteExpiry, setQuoteExpiry] = useState('');
 
   const invoke = useCallback(async (body: Record<string, unknown>) => {
     if (!supabase || demo) throw new Error('Operations require a connected Supabase project and a non-demo account.');
@@ -124,6 +131,50 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     } finally { setBusyId(''); }
   }
 
+
+  async function submitQuote(event: FormEvent) {
+    event.preventDefault();
+    if (!quoteFor) return;
+    if (reason.trim().length < 5) { setError('Enter an audit reason before issuing the quote.'); return; }
+    let terms: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(quotedTerms);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Quote terms must be a JSON object.');
+      terms = parsed as Record<string, unknown>;
+    } catch {
+      setError('Quote terms must be valid JSON object content, including exclusions and payment conditions.');
+      return;
+    }
+    if (!quoteExpiry || Number.isNaN(Date.parse(quoteExpiry)) || Date.parse(quoteExpiry) <= Date.now()) {
+      setError('Set an expiry time in the future.');
+      return;
+    }
+    const premium = Number(quotedPremium);
+    const months = Number(coverageMonths);
+    if (!Number.isFinite(premium) || premium <= 0 || !Number.isInteger(months) || months < 1 || months > 120) {
+      setError('Enter a premium above zero and a coverage term between 1 and 120 months.');
+      return;
+    }
+    setBusyId(quoteFor.id); setError('');
+    try {
+      await invoke({
+        action: 'respond_to_quote_request',
+        quote_request_id: quoteFor.id,
+        status: 'quote_available',
+        quoted_premium: premium,
+        coverage_duration_months: months,
+        quoted_terms: terms,
+        quote_expires_at: new Date(quoteExpiry).toISOString(),
+        reason: reason.trim(),
+      });
+      onNotify('Quote published for the applicant to review. It is not active insurance coverage.');
+      setQuoteFor(null); setReason('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The quote could not be published.');
+    } finally { setBusyId(''); }
+  }
+
   async function activatePolicy(event: FormEvent) {
     event.preventDefault();
     if (!policyFor) return;
@@ -157,6 +208,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     {!loading && queue && <div className="operations-summary">
       <div className="operation-metric"><span>Authorized role</span><b>{queue.role.replaceAll('_',' ')}</b><small>Resolved from your protected profile</small></div>
       <div className="operation-metric"><span>Loan requests</span><b>{queue.loan_applications?.length || 0}</b><small>Visible within your authorized scope</small></div>
+      <div className="operation-metric"><span>Quote requests</span><b>{queue.insurance_quote_requests?.length || 0}</b><small>Product-routed requests from riders</small></div>
       <div className="operation-metric"><span>Insurance claims</span><b>{queue.insurance_claims?.length || 0}</b><small>Insurer-scoped claims or admin review</small></div>
       <div className="operation-metric"><span>Support requests</span><b>{queue.support_tickets?.length || 0}</b><small>Open and assigned tickets in the queue</small></div>
     </div>}
@@ -164,6 +216,12 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     {!!queue?.loan_applications?.length && <section className="panel operations-panel"><div className="panel-heading"><div><h3><HandCoins size={17} /> Lending queue</h3><p>All offers require clear total repayment, fees, term, and frequency.</p></div><span className="count-pill">{queue.loan_applications.length}</span></div>
       <div className="operations-list">{queue.loan_applications.map((application) => <article className="operation-card" key={application.id}><div className="operation-card-main"><b>{application.application_ref} · {application.purpose.replaceAll('_',' ')}</b><span>{fmt(Number(application.requested_amount))} requested · {application.term_months} months</span><small>Received {fmtDate(application.submitted_at || application.created_at)} · Applicant ID {application.user_id.slice(0,8)}…</small></div><span className={'status-pill ' + statusTone(application.status)}>{application.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'under_review')}>Start review</button><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_documents')}>Request documents</button><button className="button button-primary" disabled={busyId===application.id} onClick={() => prepareOffer(application)}>Prepare offer</button><button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'rejected_by_lender')}>Reject</button></div>
         {offerFor?.id===application.id && <form className="offer-form" onSubmit={submitOffer}><div className="offer-form-title"><b>Create lender offer</b><button type="button" className="text-button" onClick={()=>setOfferFor(null)}>Close</button></div><div className="offer-fields"><label>Principal amount (RWF)<input type="number" min="1" value={principal} onChange={(e)=>setPrincipal(e.target.value)} required /></label><label>Interest rate value<input type="number" min="0" step="0.00001" value={rate} onChange={(e)=>setRate(e.target.value)} required /></label><label>Interest basis<input value={interestBasis} onChange={(e)=>setInterestBasis(e.target.value)} required maxLength={80} /></label><label>Fees (RWF)<input type="number" min="0" step="1" value={fees} onChange={(e)=>setFees(e.target.value)} required /></label><label>Total repayment (RWF)<input type="number" min="1" step="1" value={totalRepayment} onChange={(e)=>setTotalRepayment(e.target.value)} required /></label><label>Term (months)<input type="number" min="1" max="120" step="1" value={term} onChange={(e)=>setTerm(e.target.value)} required /></label><label>Payment frequency<select value={frequency} onChange={(e)=>setFrequency(e.target.value)}><option value="weekly">Weekly</option><option value="biweekly">Every two weeks</option><option value="monthly">Monthly</option></select></label><label>Offer expiry <span className="optional-label">Optional</span><input type="datetime-local" value={expiresAt} onChange={(e)=>setExpiresAt(e.target.value)} /></label></div><div className="inline-note"><AlertCircle size={15} /> The rate basis and full costs must match the lender's binding terms. This screen does not calculate an amortization schedule.</div><button className="button button-primary" type="submit" disabled={busyId===application.id}>{busyId===application.id?'Saving offer…':'Create and record offer' } <ArrowRight size={15}/></button></form>}
+      </article>)}</div>
+    </section>}
+
+    {!!queue?.insurance_quote_requests?.length && <section className="panel operations-panel"><div className="panel-heading"><div><h3><ShieldCheck size={17} /> Insurance quote requests</h3><p>Publish only accurate pricing and official coverage terms. An issued quote is not active cover.</p></div><span className="count-pill">{queue.insurance_quote_requests.length}</span></div>
+      <div className="operations-list">{queue.insurance_quote_requests.map((quote) => <article className="operation-card" key={quote.id}><div className="operation-card-main"><b>Quote request · {fmtDate(quote.created_at)}</b><span>{quote.notes || 'No additional notes supplied.'}</span><small>Applicant {quote.user_id.slice(0,8)}… · Product {quote.product_id ? quote.product_id.slice(0,8)+'…' : 'Not routed'} · Motorcycle {quote.motorcycle_id ? quote.motorcycle_id.slice(0,8)+'…' : 'Not linked'}</small>{quote.quoted_premium ? <small>Quoted {fmt(Number(quote.quoted_premium))} · {quote.coverage_duration_months} months · Expires {fmtDate(quote.quote_expires_at)}</small> : null}</div><span className={'status-pill '+statusTone(quote.status)}>{quote.status.replaceAll('_',' ')}</span><div className="operation-buttons">{quote.product_id ? <><button className="button button-secondary" disabled={busyId===quote.id} onClick={() => void updateStatus('respond_to_quote_request','quote_request_id',quote.id,'under_review')}>Start review</button><button className="button button-secondary" disabled={busyId===quote.id} onClick={() => void updateStatus('respond_to_quote_request','quote_request_id',quote.id,'information_requested')}>Request information</button><button className="button button-primary" disabled={busyId===quote.id} onClick={() => {setQuoteFor(quote);setQuotedPremium('');setCoverageMonths('12');setQuoteExpiry('');}}>Prepare quote</button><button className="button button-quiet" disabled={busyId===quote.id} onClick={() => void updateStatus('respond_to_quote_request','quote_request_id',quote.id,'declined')}>Decline</button></> : <span className="status-pill neutral">Select a published insurer product before routing</span>}</div>
+      {quoteFor?.id===quote.id && <form className="offer-form" onSubmit={submitQuote}><div className="offer-form-title"><b>Issue an insurance quote</b><button type="button" className="text-button" onClick={()=>setQuoteFor(null)}>Close</button></div><div className="offer-fields"><label>Premium (RWF)<input type="number" min="1" step="1" value={quotedPremium} onChange={(e)=>setQuotedPremium(e.target.value)} required /></label><label>Coverage term (months)<input type="number" min="1" max="120" step="1" value={coverageMonths} onChange={(e)=>setCoverageMonths(e.target.value)} required /></label><label>Expiry time<input type="datetime-local" value={quoteExpiry} onChange={(e)=>setQuoteExpiry(e.target.value)} required /></label></div><label className="quote-terms-label">Coverage terms as JSON<textarea rows={6} value={quotedTerms} onChange={(e)=>setQuotedTerms(e.target.value)} required /></label><div className="inline-note"><AlertCircle size={15}/> Include important exclusions, payment conditions, and all term details. Do not publish a quote unless the insurer has authorized it.</div><button className="button button-primary" type="submit" disabled={busyId===quote.id}>{busyId===quote.id?'Publishing…':'Publish quote for applicant'}</button></form>}
       </article>)}</div>
     </section>}
 
@@ -181,7 +239,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
       <div className="operations-list">{queue.support_tickets.map((ticket) => <article className="operation-card" key={ticket.id}><div className="operation-card-main"><b>{ticket.subject}</b><span>{ticket.description}</span><small>{ticket.category} · {ticket.priority} · {fmtDate(ticket.created_at)} · Assigned {ticket.assigned_to ? ticket.assigned_to.slice(0,8)+'…' : 'nobody'}</small></div><span className={'status-pill ' + statusTone(ticket.status)}>{ticket.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'assigned')}>Assign to me</button><button className="button button-primary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'resolved')}>Mark resolved</button></div></article>)}</div>
     </section>}
 
-    {!loading && queue && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
+    {!loading && queue && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.insurance_quote_requests?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
     <div className="small muted operations-footer"><Clock3 size={14}/> Every successful state change is written to the audit log. Server permissions remain authoritative even when this UI is modified.</div>
   </div>;
 }

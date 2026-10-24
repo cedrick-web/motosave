@@ -176,11 +176,11 @@ export default function MotorcyclesScreen() {
     const numericAmount = Number(serviceAmount || '0');
     const numericOdometer = odometerKm.trim() ? Number(odometerKm) : null;
     if (!maintenanceBikeId) { Alert.alert('Choose a motorcycle', 'Add a motorcycle before tracking maintenance.'); return; }
-    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(serviceDate) || Number.isNaN(Date.parse(serviceDate))) { Alert.alert('Check the service date', 'Use YYYY-MM-DD format.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate) || Number.isNaN(Date.parse(serviceDate))) { Alert.alert('Check the service date', 'Use YYYY-MM-DD format.'); return; }
     if (serviceDescription.trim().length < 3) { Alert.alert('Describe the service', 'Enter at least three characters for the work performed.'); return; }
     if (!Number.isFinite(numericAmount) || numericAmount < 0) { Alert.alert('Check the cost', 'Enter a non-negative amount.'); return; }
     if (numericOdometer !== null && (!Number.isInteger(numericOdometer) || numericOdometer < 0)) { Alert.alert('Check the odometer', 'Enter a non-negative whole number.'); return; }
-    if (nextServiceDate && (!/^\\d{4}-\\d{2}-\\d{2}$/.test(nextServiceDate) || Number.isNaN(Date.parse(nextServiceDate)))) { Alert.alert('Check the next service date', 'Use YYYY-MM-DD format.'); return; }
+    if (nextServiceDate && (!/^\d{4}-\d{2}-\d{2}$/.test(nextServiceDate) || Number.isNaN(Date.parse(nextServiceDate)))) { Alert.alert('Check the next service date', 'Use YYYY-MM-DD format.'); return; }
     if (!isSupabaseConfigured) { Alert.alert('Connect Supabase', 'Maintenance records need the shared Supabase backend.'); return; }
     setSavingService(true);
     try {

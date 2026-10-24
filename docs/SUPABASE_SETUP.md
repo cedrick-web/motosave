@@ -36,3 +36,13 @@ The partner console calls a server-side Edge Function. It is not a direct browse
 7. Review audit_logs after every status change. The console does not contact any payment provider, lender core system, or insurer API on your behalf.
 
 Partner roles are intentionally not self-service. Activate a partner organization only after verifying the legal entity and appropriate authorization. A policy record should only be marked active after the issuing insurer's own issuance record has been independently confirmed.
+
+
+## Published-product and decision workflow
+
+- The platform only exposes lender and insurance products when both the product is published and its partner organization is verified and published.
+- Riders can choose a published product when submitting an application/quote. A general un-routed request is visible only to platform operations and is not routed to an individual lender/insurer.
+- Lender partners can issue an offer containing principal, interest rate basis, fees, total repayment, term, frequency, and expiry. The rider can accept or decline the offer. Acceptance records the applicant decision; it does not disburse funds.
+- Insurer partners can issue a quote with premium, coverage duration, structured written terms/exclusions, and an expiry. Riders can accept/decline the issued quote. Acceptance creates a policy record in `awaiting_payment`; it does not activate cover.
+- Every partner action requires an authenticated profile, active account, verified organization, and active partner membership and is written to `audit_logs`.
+- A trusted admin must create/verify partner organizations, assign membership roles, and approve/publish products. Never enable partner roles from public signup metadata.

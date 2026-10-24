@@ -8,7 +8,7 @@ MotoSave is a mobile-first financial wellbeing platform for motorcycle taxi ride
 
 - Responsive React + TypeScript web workspace for dashboard, savings goals, motorcycle records, financing applications, insurance quote requests, activity, support, and settings.
 - Expo React Native application with Supabase authentication and shared-backend screens for dashboard, savings goals and contribution history, motorcycles and maintenance logs, private document upload, financing applications, insurance quotes and claims, profile settings, notifications, and support tickets.
-- Partner operations console backed by a role-checked Edge Function for lender queues/offers, insurer claim/policy workflow, and support-ticket assignment. Operational changes are audit logged and require an authorized role.
+- Partner operations console backed by a role-checked Edge Function for lender queues/offers, insurer quote/claim/policy workflows, and support-ticket assignment. Riders can review and accept/decline issued loan offers and insurance quotes; offer/quote acceptance never moves funds or activates cover by itself. Operational changes are audit logged and require an authorized role.
 - Supabase PostgreSQL migration with profiles, motorcycles, savings goals and manual entries, loan applications/offers/installments, insurance products/quotes/policies/premiums/claims, notifications, partner records, support, audit records, and private document storage policies.
 - Row Level Security (RLS) and restrictive column grants for user-editable fields.
 - Explicit demo mode when Supabase client variables are absent. Demo data is fictional and stored locally in the browser; it is not real money, a bank balance, a loan offer, a payment, or insurance coverage.
