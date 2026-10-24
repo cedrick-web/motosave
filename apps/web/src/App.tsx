@@ -230,6 +230,14 @@ export default function App() {
       } else if (modal === 'loan') {
         const payload = { purpose: form.loan_purpose, product_id: form.loan_product_id || null, requested_amount: Number(form.requested_amount), term_months: Number(form.term_months), notes: form.note.trim() || null };
         if (!Number.isFinite(payload.requested_amount) || payload.requested_amount <= 0 || !Number.isInteger(payload.term_months) || payload.term_months < 1 || payload.term_months > 120) throw new Error('Enter a valid amount and a term between 1 and 120 months.');
+        const chosenProduct = loanProducts.find((product) => product.id === payload.product_id);
+        if (payload.product_id && !chosenProduct) throw new Error('The selected lender product is no longer available. Refresh the product catalog.');
+        if (chosenProduct && ((chosenProduct.min_amount !== null && payload.requested_amount < Number(chosenProduct.min_amount)) ||
+          (chosenProduct.max_amount !== null && payload.requested_amount > Number(chosenProduct.max_amount)) ||
+          (chosenProduct.min_term_months !== null && payload.term_months < Number(chosenProduct.min_term_months)) ||
+          (chosenProduct.max_term_months !== null && payload.term_months > Number(chosenProduct.max_term_months)))) {
+          throw new Error('The requested amount or term is outside the selected lender product limits.');
+        }
         if (supabase && session) {
           const { data, error } = await supabase.from('loan_applications').insert({ ...payload, user_id: session.user.id }).select('*').single();
           if (error) throw error;

@@ -474,7 +474,14 @@ create policy loan_applications_insert_own on public.loan_applications for inser
   and (product_id is null or exists (
     select 1 from public.loan_products lp
     join public.partner_organizations po on po.id = lp.partner_id
-    where lp.id = product_id and lp.is_published = true and po.status = 'verified' and po.is_published = true
+    where lp.id = product_id
+      and lp.is_published = true
+      and po.status = 'verified'
+      and po.is_published = true
+      and (lp.min_amount is null or requested_amount >= lp.min_amount)
+      and (lp.max_amount is null or requested_amount <= lp.max_amount)
+      and (lp.min_term_months is null or term_months >= lp.min_term_months)
+      and (lp.max_term_months is null or term_months <= lp.max_term_months)
   ))
 );
 

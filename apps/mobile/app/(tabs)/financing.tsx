@@ -52,6 +52,15 @@ export default function FinancingScreen() {
   async function submit() {
     const numeric = Number(amount); const months = Number(term);
     if (!Number.isFinite(numeric) || numeric <= 0 || !Number.isInteger(months) || months < 1 || months > 120) { Alert.alert('Check the application', 'Enter an amount above zero and a term between 1 and 120 months.'); return; }
+    const chosenProduct = products.find((product) => product.id === selectedProductId);
+    if (selectedProductId && !chosenProduct) { Alert.alert('Product unavailable', 'Refresh the published lender catalog before submitting.'); return; }
+    if (chosenProduct && ((chosenProduct.min_amount !== null && numeric < Number(chosenProduct.min_amount)) ||
+      (chosenProduct.max_amount !== null && numeric > Number(chosenProduct.max_amount)) ||
+      (chosenProduct.min_term_months !== null && months < Number(chosenProduct.min_term_months)) ||
+      (chosenProduct.max_term_months !== null && months > Number(chosenProduct.max_term_months)))) {
+      Alert.alert('Outside product limits', 'The requested amount or term is outside the selected lender product limits.');
+      return;
+    }
     if (!isSupabaseConfigured) { Alert.alert('Connect Supabase', 'Configure the Supabase project before submitting a request.'); return; }
     setSubmitting(true);
     try {

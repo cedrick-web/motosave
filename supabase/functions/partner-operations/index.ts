@@ -857,9 +857,17 @@ Deno.serve(async (request: Request) => {
       if (!["submitted", "awaiting_documents", "under_review", "referred_to_partner"].includes(application.status)) {
         return fail("application_not_ready_for_offer", 409, allowedOrigin);
       }
-      const { data: product } = await admin.from("loan_products").select("partner_id").eq("id", application.product_id).maybeSingle();
+      const { data: product } = await admin.from("loan_products")
+        .select("partner_id,min_amount,max_amount,min_term_months,max_term_months")
+        .eq("id", application.product_id).maybeSingle();
       if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "lender", "lender_officer")) {
         return fail("partner_scope_denied", 403, allowedOrigin);
+      }
+      if ((product.min_amount !== null && principalAmount < Number(product.min_amount)) ||
+          (product.max_amount !== null && principalAmount > Number(product.max_amount)) ||
+          (product.min_term_months !== null && termMonths < Number(product.min_term_months)) ||
+          (product.max_term_months !== null && termMonths > Number(product.max_term_months))) {
+        return fail("offer_outside_published_product_limits", 400, allowedOrigin);
       }
       const { data: offer, error: offerError } = await admin.from("loan_offers").insert({
         application_id: applicationId, partner_id: product.partner_id, principal_amount: principalAmount,
