@@ -23,7 +23,7 @@ const loanStatusTransitions: Record<string, string[]> = {
   accepted_by_applicant: ["awaiting_agreement", "cancelled"],
   awaiting_agreement: ["awaiting_disbursement", "cancelled", "expired"],
   awaiting_disbursement: ["disbursed", "cancelled"],
-  disbursed: ["active", "completed"],
+  disbursed: ["active"],
   active: ["completed"],
 };
 const claimStatuses = new Set([
@@ -137,9 +137,15 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
       admin.from("motorcycle_documents").select("id,owner_id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at").order("created_at", { ascending: false }).limit(200),
     ]);
     if ([loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts, motorcycleDocuments].some((result) => result.error)) throw new Error("queue_load_failed");
+    const loanApplicationIds = (loanApps.data || []).map((application: { id: string }) => application.id);
+    const installmentResult = loanApplicationIds.length
+      ? await admin.from("repayment_installments").select("id,loan_application_id,installment_number,due_date,total_due,status").in("loan_application_id", loanApplicationIds).order("due_date", { ascending: true }).limit(5000)
+      : { data: [], error: null };
+    if (installmentResult.error) throw new Error("repayment_schedule_queue_load_failed");
     return {
       role,
       loan_applications: loanApps.data || [],
+      repayment_installments: installmentResult.data || [],
       insurance_claims: claims.data || [],
       support_tickets: tickets.data || [],
       insurance_policies: policies.data || [],
@@ -166,11 +172,17 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
       .order("created_at", { ascending: false }).limit(100);
     if (error) throw new Error("loan_queue_load_failed");
     const appIds = (apps || []).map((app: { id: string }) => app.id);
-    const offersResult = appIds.length
-      ? await admin.from("loan_offers").select("id,application_id,principal_amount,total_repayment,term_months,status,expires_at").in("application_id", appIds)
-      : { data: [], error: null };
+    const [offersResult, installmentResult] = await Promise.all([
+      appIds.length
+        ? admin.from("loan_offers").select("id,application_id,principal_amount,total_repayment,term_months,status,expires_at").in("application_id", appIds)
+        : Promise.resolve({ data: [], error: null }),
+      appIds.length
+        ? admin.from("repayment_installments").select("id,loan_application_id,installment_number,due_date,total_due,status").in("loan_application_id", appIds).order("due_date", { ascending: true }).limit(5000)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
     if (offersResult.error) throw new Error("loan_offer_queue_load_failed");
-    return { role, loan_products: products || [], loan_applications: apps || [], loan_offers: offersResult.data || [] };
+    if (installmentResult.error) throw new Error("repayment_schedule_queue_load_failed");
+    return { role, loan_products: products || [], loan_applications: apps || [], loan_offers: offersResult.data || [], repayment_installments: installmentResult.data || [] };
   }
 
   if (role === "insurer_officer") {
@@ -552,7 +564,7 @@ Deno.serve(async (request: Request) => {
       if (!quoteRequestId || !nextStatus || !validStatuses.has(nextStatus)) return fail("invalid_quote_request_or_status", 400, allowedOrigin);
       if (["declined", "expired"].includes(nextStatus) && !validReason(body.reason)) return fail("decision_reason_required", 400, allowedOrigin);
       const { data: quoteRequest } = await admin.from("insurance_quote_requests")
-        .select("id,product_id,status").eq("id", quoteRequestId).maybeSingle();
+        .select("id,user_id,product_id,status").eq("id", quoteRequestId).maybeSingle();
       if (!quoteRequest?.product_id) return fail("quote_request_not_routed_to_insurer", 404, allowedOrigin);
       const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", quoteRequest.product_id).maybeSingle();
       if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
@@ -576,7 +588,19 @@ Deno.serve(async (request: Request) => {
       const { error } = await admin.from("insurance_quote_requests").update(update).eq("id", quoteRequestId);
       if (error) return fail("quote_request_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "respond_to_quote_request", "insurance_quote_request", quoteRequestId, reason, product.partner_id, requestId);
-      return respond(200, { ok: true, quote_request_id: quoteRequestId, status: nextStatus }, allowedOrigin);
+      const notificationTitle = nextStatus === "quote_available" ? "Your insurance quote is ready"
+        : nextStatus === "declined" ? "Insurance quote request update" : "Insurance quote request status changed";
+      const notificationMessage = nextStatus === "quote_available"
+        ? "An insurer has issued a quote. Review the premium, coverage term, exclusions, payment conditions, and expiry before accepting."
+        : "Your insurance quote request is now " + nextStatus.replaceAll("_", " ") + ". Check MotoSave for details or contact support.";
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: quoteRequest.user_id,
+        title: notificationTitle,
+        message: notificationMessage,
+        notification_type: "insurance_quote",
+        action_path: "/insurance",
+      });
+      return respond(200, { ok: true, quote_request_id: quoteRequestId, status: nextStatus, notification_created: !notificationError }, allowedOrigin);
     }
 
     if (action === "accept_insurance_quote") {
@@ -714,7 +738,7 @@ Deno.serve(async (request: Request) => {
       if (totalRepayment < principalAmount || totalRepayment < principalAmount + fees) return fail("total_repayment_inconsistent", 400, allowedOrigin);
       if (expiresAt && Number.isNaN(Date.parse(expiresAt))) return fail("invalid_expiry", 400, allowedOrigin);
       const { data: application, error } = await admin.from("loan_applications")
-        .select("id,product_id,status,requested_amount").eq("id", applicationId).maybeSingle();
+        .select("id,user_id,application_ref,product_id,status,requested_amount").eq("id", applicationId).maybeSingle();
       if (error || !application) return fail("application_not_found", 404, allowedOrigin);
       if (!application.product_id) return fail("application_not_routed_to_lender", 409, allowedOrigin);
       if (principalAmount > Number(application.requested_amount)) return fail("offer_exceeds_requested_amount", 400, allowedOrigin);
@@ -736,7 +760,14 @@ Deno.serve(async (request: Request) => {
         .update({ status: "offer_available", updated_at: new Date().toISOString() }).eq("id", applicationId);
       if (updateError) return respond(500, { error: "offer_created_application_update_failed", offer_id: offer.id }, allowedOrigin);
       await audit(admin, userId, "create_loan_offer", "loan_offer", offer.id, reason, product.partner_id, requestId);
-      return respond(201, { ok: true, offer }, allowedOrigin);
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: application.user_id,
+        title: "A lender offer is available",
+        message: "A lender has issued an offer for financing request " + application.application_ref + ". Review the principal, total repayment, fees, term, frequency, and expiry before deciding.",
+        notification_type: "loan_offer",
+        action_path: "/financing",
+      });
+      return respond(201, { ok: true, offer, notification_created: !notificationError }, allowedOrigin);
     }
 
     if (action === "update_claim_status") {
@@ -745,7 +776,7 @@ Deno.serve(async (request: Request) => {
       const nextStatus = textValue(body.status, 80);
       if (!claimId || !nextStatus || !claimStatuses.has(nextStatus)) return fail("invalid_claim_or_status", 400, allowedOrigin);
       if (["rejected", "settled"].includes(nextStatus) && !validReason(body.reason)) return fail("decision_reason_required", 400, allowedOrigin);
-      const { data: claim } = await admin.from("insurance_claims").select("id,policy_id,status").eq("id", claimId).maybeSingle();
+      const { data: claim } = await admin.from("insurance_claims").select("id,user_id,policy_id,status").eq("id", claimId).maybeSingle();
       if (!claim) return fail("claim_not_found", 404, allowedOrigin);
       const { data: policy } = await admin.from("insurance_policies").select("id,product_id").eq("id", claim.policy_id).maybeSingle();
       if (!policy?.product_id) return fail("policy_not_routed_to_insurer", 409, allowedOrigin);
@@ -755,7 +786,14 @@ Deno.serve(async (request: Request) => {
       const { error } = await admin.from("insurance_claims").update({ status: nextStatus, updated_at: new Date().toISOString() }).eq("id", claimId);
       if (error) return fail("claim_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "update_claim_status", "insurance_claim", claimId, reason, product.partner_id, requestId);
-      return respond(200, { ok: true, claim_id: claimId, status: nextStatus }, allowedOrigin);
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: claim.user_id,
+        title: "Insurance claim status updated",
+        message: "Your insurance claim is now " + nextStatus.replaceAll("_", " ") + ". Contact your insurer for any decision details or next steps.",
+        notification_type: "insurance_claim_status",
+        action_path: "/insurance",
+      });
+      return respond(200, { ok: true, claim_id: claimId, status: nextStatus, notification_created: !notificationError }, allowedOrigin);
     }
 
     if (action === "update_policy_status") {
@@ -763,26 +801,48 @@ Deno.serve(async (request: Request) => {
       const policyId = textValue(body.policy_id, 80);
       const nextStatus = textValue(body.status, 80);
       if (!policyId || !nextStatus || !policyStatuses.has(nextStatus)) return fail("invalid_policy_or_status", 400, allowedOrigin);
-      const { data: policy } = await admin.from("insurance_policies").select("id,product_id,status").eq("id", policyId).maybeSingle();
+      const { data: policy } = await admin.from("insurance_policies").select("id,user_id,product_id,status,terms").eq("id", policyId).maybeSingle();
       if (!policy?.product_id) return fail("policy_not_found_or_not_routed", 404, allowedOrigin);
       const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", policy.product_id).maybeSingle();
       if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
+      const allowedNextStatuses: Record<string, string[]> = {
+        pending: ["quoted", "awaiting_payment", "active", "cancelled"],
+        quoted: ["awaiting_payment", "active", "cancelled", "expired"],
+        awaiting_payment: ["active", "cancelled", "expired"],
+        active: ["suspended", "expired", "claim_in_progress"],
+        claim_in_progress: ["active", "suspended", "expired"],
+        suspended: ["active", "expired", "cancelled"],
+      };
+      if (!(allowedNextStatuses[policy.status] || []).includes(nextStatus)) return fail("invalid_policy_status_transition", 409, allowedOrigin);
       const update: Json = { status: nextStatus, updated_at: new Date().toISOString() };
       if (nextStatus === "active") {
         const policyNumber = textValue(body.policy_number, 120);
         const providerReference = textValue(body.provider_reference, 160);
-        if (!policyNumber || !providerReference || !isDate(body.coverage_start) || !isDate(body.coverage_end) || String(body.coverage_end) < String(body.coverage_start)) {
-          return fail("active_policy_requires_number_reference_and_valid_coverage_dates", 400, allowedOrigin);
+        const paymentReference = textValue(body.payment_reference, 160);
+        if (!policyNumber || !providerReference || !paymentReference || !isDate(body.coverage_start) || !isDate(body.coverage_end) || String(body.coverage_end) < String(body.coverage_start)) {
+          return fail("active_policy_requires_policy_number_provider_reference_payment_reference_and_valid_coverage_dates", 400, allowedOrigin);
         }
+        const priorTerms = policy.terms && typeof policy.terms === "object" && !Array.isArray(policy.terms)
+          ? policy.terms as Record<string, unknown> : {};
         update.policy_number = policyNumber;
         update.provider_reference = providerReference;
         update.coverage_start = body.coverage_start;
         update.coverage_end = body.coverage_end;
+        update.terms = { ...priorTerms, activation_payment_reference: paymentReference, payment_confirmed_at: new Date().toISOString() };
       }
       const { error } = await admin.from("insurance_policies").update(update).eq("id", policyId);
       if (error) return fail("policy_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "update_policy_status", "insurance_policy", policyId, reason, product.partner_id, requestId);
-      return respond(200, { ok: true, policy_id: policyId, status: nextStatus }, allowedOrigin);
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: policy.user_id,
+        title: nextStatus === "active" ? "Insurance policy status confirmed" : "Insurance policy status updated",
+        message: nextStatus === "active"
+          ? "The insurer recorded policy issuance and an external payment reference. Review the policy dates and conditions; contact the insurer if anything is incorrect."
+          : "Your insurance policy is now " + nextStatus.replaceAll("_", " ") + ". Contact your insurer about any required next steps.",
+        notification_type: "insurance_policy_status",
+        action_path: "/insurance",
+      });
+      return respond(200, { ok: true, policy_id: policyId, status: nextStatus, notification_created: !notificationError }, allowedOrigin);
     }
 
     if (action === "list_ticket_messages") {
@@ -849,7 +909,7 @@ Deno.serve(async (request: Request) => {
       const ticketId = textValue(body.ticket_id, 80);
       const nextStatus = textValue(body.status || "assigned", 80);
       if (!ticketId || !nextStatus || !ticketStatuses.has(nextStatus)) return fail("invalid_ticket_or_status", 400, allowedOrigin);
-      const { data: ticket } = await admin.from("support_tickets").select("id,status,assigned_to").eq("id", ticketId).maybeSingle();
+      const { data: ticket } = await admin.from("support_tickets").select("id,user_id,subject,status,assigned_to").eq("id", ticketId).maybeSingle();
       if (!ticket) return fail("ticket_not_found", 404, allowedOrigin);
       if (["resolved", "closed"].includes(ticket.status)) return fail("ticket_is_closed", 409, allowedOrigin);
       if (role === "support_agent" && ticket.assigned_to && ticket.assigned_to !== userId) return fail("ticket_assigned_to_another_agent", 403, allowedOrigin);
@@ -858,7 +918,14 @@ Deno.serve(async (request: Request) => {
       }).eq("id", ticketId);
       if (error) return fail("ticket_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "assign_support_ticket", "support_ticket", ticketId, reason, null, requestId);
-      return respond(200, { ok: true, ticket_id: ticketId, status: nextStatus, assigned_to: userId }, allowedOrigin);
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: ticket.user_id,
+        title: nextStatus === "resolved" ? "Your support request was resolved" : "Your support request was updated",
+        message: "Your support request '" + ticket.subject + "' is now " + nextStatus.replaceAll("_", " ") + ".",
+        notification_type: "support_ticket_status",
+        action_path: "/support",
+      });
+      return respond(200, { ok: true, ticket_id: ticketId, status: nextStatus, assigned_to: userId, notification_created: !notificationError }, allowedOrigin);
     }
 
     return fail("unknown_action", 400, allowedOrigin);

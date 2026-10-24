@@ -80,3 +80,12 @@ Savings goals and manually entered contributions are planning records. They are 
 - docs: architecture, typography licensing, and go-live checks.
 
 See docs/GO_LIVE_CHECKLIST.md before handling any real personal or financial data.
+
+
+### Partner and rider workflows
+
+- Riders can view lender/insurer product catalogs, submit product-routed requests, review actual offers/quotes, and accept or decline them.
+- Lender offers must match the lender's written terms. Repayment schedules are imported from an authorized lender source and validated against the accepted offer; MotoSave does not invent rates or move funds.
+- Insurance activation requires an insurer policy reference, coverage dates, and external payment confirmation. Quote acceptance alone never activates cover.
+- Support tickets have rider/staff conversations and account notifications. Access is checked server-side and staff actions are audit logged.
+- Motorcycle documents use a private Supabase Storage bucket. Document review status and staff access are audit logged.

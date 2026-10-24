@@ -19,6 +19,7 @@ type SupportTicket = {
   priority: string; assigned_to: string | null; created_at: string;
 };
 type SupportMessage = { id: string; ticket_id: string; author_id: string; body: string; created_at: string };
+type RepaymentInstallment = { id: string; loan_application_id: string; installment_number: number; due_date: string; total_due: number; status: string };
 type PartnerOrganization = { id: string; legal_name: string; display_name: string; partner_type: string; public_contact: string | null; status: string; is_published: boolean; created_at: string };
 type PartnerMembership = { id: string; user_id: string; organization_id: string; partner_role: string; status: string; created_at: string };
 type AdminProfile = { id: string; full_name: string; phone: string | null; role: string; account_status: string; created_at: string };
@@ -28,6 +29,7 @@ type AdminMotorcycleDocument = { id: string; owner_id: string; motorcycle_id: st
 type Queue = {
   role: string;
   loan_applications?: LoanApplication[];
+  repayment_installments?: RepaymentInstallment[];
   insurance_claims?: InsuranceClaim[];
   insurance_policies?: InsurancePolicy[];
   insurance_quote_requests?: InsuranceQuoteRequest[];
@@ -69,6 +71,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const [policyFor, setPolicyFor] = useState<InsurancePolicy | null>(null);
   const [policyNumber, setPolicyNumber] = useState('');
   const [providerReference, setProviderReference] = useState('');
+  const [paymentReference, setPaymentReference] = useState('');
   const [coverageStart, setCoverageStart] = useState('');
   const [coverageEnd, setCoverageEnd] = useState('');
   const [quoteFor, setQuoteFor] = useState<InsuranceQuoteRequest | null>(null);
@@ -76,6 +79,8 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   const [coverageMonths, setCoverageMonths] = useState('12');
   const [quotedTerms, setQuotedTerms] = useState('{"coverage":"Describe the included cover","exclusions":[],"payment_conditions":"Confirm with insurer"}');
   const [quoteExpiry, setQuoteExpiry] = useState('');
+  const [scheduleFor, setScheduleFor] = useState<LoanApplication | null>(null);
+  const [scheduleJson, setScheduleJson] = useState('[]');
 
   const invoke = useCallback(async (body: Record<string, unknown>) => {
     if (!supabase || demo) throw new Error('Operations require a connected Supabase project and a non-demo account.');
@@ -166,6 +171,35 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     setExpiresAt('');
   }
 
+  async function submitSchedule(event: FormEvent) {
+    event.preventDefault();
+    if (!scheduleFor) return;
+    if (reason.trim().length < 5) { setError('Enter an audit note that identifies the lender schedule source.'); return; }
+    let rows: unknown;
+    try {
+      rows = JSON.parse(scheduleJson) as unknown;
+      if (!Array.isArray(rows) || rows.length < 1) throw new Error('Provide a JSON array with at least one installment.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Schedule must be a valid JSON array.');
+      return;
+    }
+    setBusyId(scheduleFor.id); setError('');
+    try {
+      await invoke({
+        action: 'record_repayment_schedule',
+        application_id: scheduleFor.id,
+        installments: rows,
+        reason: reason.trim(),
+      });
+      onNotify('Official repayment schedule recorded. The lender remains responsible for its accuracy.');
+      setReason('');
+      setScheduleFor(null); setScheduleJson('[]');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Repayment schedule could not be recorded.');
+    } finally { setBusyId(''); }
+  }
+
   async function submitOffer(event: FormEvent) {
     event.preventDefault();
     if (!offerFor) return;
@@ -240,18 +274,18 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
   async function activatePolicy(event: FormEvent) {
     event.preventDefault();
     if (!policyFor) return;
-    if (!policyNumber.trim() || !providerReference.trim() || !coverageStart || !coverageEnd || reason.trim().length < 5) {
-      setError('Policy number, provider reference, coverage dates, and an audit reason are required.');
+    if (!policyNumber.trim() || !providerReference.trim() || !paymentReference.trim() || !coverageStart || !coverageEnd || reason.trim().length < 5) {
+      setError('Policy number, insurer issuance reference, external payment confirmation reference, coverage dates, and an audit reason are required.');
       return;
     }
     setBusyId(policyFor.id); setError('');
     try {
       await invoke({
         action: 'update_policy_status', policy_id: policyFor.id, status: 'active',
-        policy_number: policyNumber.trim(), provider_reference: providerReference.trim(),
+        policy_number: policyNumber.trim(), provider_reference: providerReference.trim(), payment_reference: paymentReference.trim(),
         coverage_start: coverageStart, coverage_end: coverageEnd, reason: reason.trim(),
       });
-      onNotify('Policy record updated. Confirm issuance with the responsible insurer/provider.');
+      onNotify('Policy status updated using the insurer issuance record and external payment reference. MotoSave did not process the payment.');
       setPolicyFor(null); setReason('');
       await load();
     } catch (err) {
@@ -273,6 +307,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     {!loading && queue && <div className="operations-summary">
       <div className="operation-metric"><span>Authorized role</span><b>{queue.role.replaceAll('_',' ')}</b><small>Resolved from your protected profile</small></div>
       <div className="operation-metric"><span>Loan requests</span><b>{queue.loan_applications?.length || 0}</b><small>Visible within your authorized scope</small></div>
+      <div className="operation-metric"><span>Repayment installments</span><b>{queue.repayment_installments?.length || 0}</b><small>Recorded from lender-approved schedules</small></div>
       <div className="operation-metric"><span>Quote requests</span><b>{queue.insurance_quote_requests?.length || 0}</b><small>Product-routed requests from riders</small></div>
       <div className="operation-metric"><span>Insurance claims</span><b>{queue.insurance_claims?.length || 0}</b><small>Insurer-scoped claims or admin review</small></div>
       <div className="operation-metric"><span>Support requests</span><b>{queue.support_tickets?.length || 0}</b><small>Open and assigned tickets in the queue</small></div>
@@ -287,11 +322,12 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
           {application.status === 'accepted_by_applicant' && <button className="button button-primary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_agreement')}>Start agreement</button>}
           {application.status === 'awaiting_agreement' && <button className="button button-primary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'awaiting_disbursement')}>Agreement complete</button>}
           {application.status === 'awaiting_disbursement' && <div className="disbursement-record"><label>Verified external disbursement reference<input value={disbursementRefs[application.id] || ''} onChange={(e)=>setDisbursementRefs((rows)=>({...rows,[application.id]:e.target.value}))} maxLength={160} placeholder="Lender core-system reference" /></label><p className="small muted">Use only after the lender confirms funds were actually disbursed outside MotoSave.</p><button className="button button-primary" disabled={busyId===application.id||!(disbursementRefs[application.id]||'').trim()} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'disbursed',{partner_reference:(disbursementRefs[application.id]||'').trim()})}>Record verified disbursement</button></div>}
-          {application.status === 'disbursed' && <><span className="status-pill success">External reference: {application.lender_reference || 'Not recorded'}</span><button className="button button-secondary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'active')}>Mark active</button><button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'completed')}>Mark completed</button></>}
+          {['disbursed','active'].includes(application.status) && <><span className="status-pill success">External reference: {application.lender_reference || 'Not recorded'}</span>{!(queue.repayment_installments||[]).some(item=>item.loan_application_id===application.id) && <button className="button button-secondary" disabled={busyId===application.id} onClick={() => {setScheduleFor(application);setScheduleJson('[]');}}>Record official schedule</button>}{(queue.repayment_installments||[]).filter(item=>item.loan_application_id===application.id).length>0&&<span className="status-pill neutral">{(queue.repayment_installments||[]).filter(item=>item.loan_application_id===application.id).length} installments recorded</span>}{application.status==='disbursed'&&(queue.repayment_installments||[]).some(item=>item.loan_application_id===application.id)&&<button className="button button-primary" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'active')}>Mark active</button>}{application.status==='active'&&<button className="button button-quiet" disabled={busyId===application.id} onClick={() => void updateStatus('update_loan_status','application_id',application.id,'completed')}>Mark completed</button>}</>}
           {application.status === 'offer_available' && <span className="small muted">Waiting for the rider to accept or decline the offer.</span>}
           {application.status === 'declined_by_applicant' && <span className="small muted">The rider declined the offer. No funds were moved.</span>}
         </div>
         {offerFor?.id===application.id && <form className="offer-form" onSubmit={submitOffer}><div className="offer-form-title"><b>Create lender offer</b><button type="button" className="text-button" onClick={()=>setOfferFor(null)}>Close</button></div><div className="offer-fields"><label>Principal amount (RWF)<input type="number" min="1" value={principal} onChange={(e)=>setPrincipal(e.target.value)} required /></label><label>Interest rate value<input type="number" min="0" step="0.00001" value={rate} onChange={(e)=>setRate(e.target.value)} required /></label><label>Interest basis<input value={interestBasis} onChange={(e)=>setInterestBasis(e.target.value)} required maxLength={80} /></label><label>Fees (RWF)<input type="number" min="0" step="1" value={fees} onChange={(e)=>setFees(e.target.value)} required /></label><label>Total repayment (RWF)<input type="number" min="1" step="1" value={totalRepayment} onChange={(e)=>setTotalRepayment(e.target.value)} required /></label><label>Term (months)<input type="number" min="1" max="120" step="1" value={term} onChange={(e)=>setTerm(e.target.value)} required /></label><label>Payment frequency<select value={frequency} onChange={(e)=>setFrequency(e.target.value)}><option value="weekly">Weekly</option><option value="biweekly">Every two weeks</option><option value="monthly">Monthly</option></select></label><label>Offer expiry <span className="optional-label">Optional</span><input type="datetime-local" value={expiresAt} onChange={(e)=>setExpiresAt(e.target.value)} /></label></div><div className="inline-note"><AlertCircle size={15} /> The rate basis and full costs must match the lender's binding terms. This screen does not calculate an amortization schedule.</div><button className="button button-primary" type="submit" disabled={busyId===application.id}>{busyId===application.id?'Saving offer…':'Create and record offer' } <ArrowRight size={15}/></button></form>}
+        {scheduleFor?.id===application.id && <form className="offer-form schedule-import-form" onSubmit={submitSchedule}><div className="offer-form-title"><b>Record the lender's official schedule</b><button type="button" className="text-button" onClick={()=>setScheduleFor(null)}>Close</button></div><p className="small muted">Use exact installment values from the lender's approved schedule. MotoSave validates that principal, fees, and total repayment match the accepted offer; it does not invent a repayment plan.</p><label className="quote-terms-label">Installments JSON<textarea rows={8} value={scheduleJson} onChange={(e)=>setScheduleJson(e.target.value)} required placeholder={'[\n  {"due_date":"2026-11-24","principal_due":50000,"interest_due":2500,"fees_due":0}\n]'}/></label><div className="inline-note"><AlertCircle size={15}/> Each row needs an ISO date plus principal_due, interest_due and fees_due in RWF. Rows are numbered by order; totals must match the accepted offer exactly to normal cent rounding.</div><button className="button button-primary" type="submit" disabled={busyId===application.id||!scheduleJson.trim()}>{busyId===application.id?'Validating…':'Validate and record schedule'} <ArrowRight size={15}/></button></form>}
       </article>)}</div>
     </section>}
 
@@ -306,8 +342,8 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     </section>}
 
     {!!queue?.insurance_policies?.length && <section className="panel operations-panel"><div className="panel-heading"><div><h3><ShieldCheck size={17} /> Policy records</h3><p>Active coverage requires a policy number, provider reference, and valid coverage dates.</p></div><span className="count-pill">{queue.insurance_policies.length}</span></div>
-      <div className="operations-list">{queue.insurance_policies.map((policy) => <article className="operation-card" key={policy.id}><div className="operation-card-main"><b>{policy.policy_number || 'Policy not yet numbered'}</b><span>{policy.coverage_start || 'Start pending'} to {policy.coverage_end || 'End pending'}</span><small>Provider reference: {policy.provider_reference || 'Not recorded'}</small></div><span className={'status-pill ' + statusTone(policy.status)}>{policy.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-primary" disabled={busyId===policy.id} onClick={()=>{setPolicyFor(policy);setPolicyNumber(policy.policy_number||'');setProviderReference(policy.provider_reference||'');setCoverageStart(policy.coverage_start||'');setCoverageEnd(policy.coverage_end||'');}}>Record active coverage</button><button className="button button-secondary" disabled={busyId===policy.id} onClick={()=>void updateStatus('update_policy_status','policy_id',policy.id,'suspended')}>Suspend</button><button className="button button-quiet" disabled={busyId===policy.id} onClick={()=>void updateStatus('update_policy_status','policy_id',policy.id,'expired')}>Mark expired</button></div>
-        {policyFor?.id===policy.id && <form className="offer-form" onSubmit={activatePolicy}><div className="offer-form-title"><b>Confirm insurer-issued policy details</b><button type="button" className="text-button" onClick={()=>setPolicyFor(null)}>Close</button></div><div className="offer-fields"><label>Policy number<input value={policyNumber} onChange={(e)=>setPolicyNumber(e.target.value)} required /></label><label>Provider reference<input value={providerReference} onChange={(e)=>setProviderReference(e.target.value)} required /></label><label>Coverage start<input type="date" value={coverageStart} onChange={(e)=>setCoverageStart(e.target.value)} required /></label><label>Coverage end<input type="date" value={coverageEnd} onChange={(e)=>setCoverageEnd(e.target.value)} required /></label></div><div className="inline-note"><ShieldAlert size={15}/> Use these actions only after verifying the insurer's own issuance record. This console does not contact an insurer API.</div><button className="button button-primary" disabled={busyId===policy.id} type="submit">{busyId===policy.id?'Saving…':'Confirm policy record'}</button></form>}
+      <div className="operations-list">{queue.insurance_policies.map((policy) => <article className="operation-card" key={policy.id}><div className="operation-card-main"><b>{policy.policy_number || 'Policy not yet numbered'}</b><span>{policy.coverage_start || 'Start pending'} to {policy.coverage_end || 'End pending'}</span><small>Provider reference: {policy.provider_reference || 'Not recorded'}</small></div><span className={'status-pill ' + statusTone(policy.status)}>{policy.status.replaceAll('_',' ')}</span><div className="operation-buttons">{['pending','quoted','awaiting_payment','suspended','claim_in_progress'].includes(policy.status)&&<button className="button button-primary" disabled={busyId===policy.id} onClick={()=>{setPolicyFor(policy);setPolicyNumber(policy.policy_number||'');setProviderReference(policy.provider_reference||'');setPaymentReference('');setCoverageStart(policy.coverage_start||'');setCoverageEnd(policy.coverage_end||'');}}>Record active coverage</button>}{['active','claim_in_progress'].includes(policy.status)&&<button className="button button-secondary" disabled={busyId===policy.id} onClick={()=>void updateStatus('update_policy_status','policy_id',policy.id,'suspended')}>Suspend</button>}{['quoted','awaiting_payment','active','claim_in_progress','suspended'].includes(policy.status)&&<button className="button button-quiet" disabled={busyId===policy.id} onClick={()=>void updateStatus('update_policy_status','policy_id',policy.id,'expired')}>Mark expired</button>}</div>
+        {policyFor?.id===policy.id && <form className="offer-form" onSubmit={activatePolicy}><div className="offer-form-title"><b>Confirm insurer-issued policy details</b><button type="button" className="text-button" onClick={()=>setPolicyFor(null)}>Close</button></div><div className="offer-fields"><label>Policy number<input value={policyNumber} onChange={(e)=>setPolicyNumber(e.target.value)} required /></label><label>Insurer issuance reference<input value={providerReference} onChange={(e)=>setProviderReference(e.target.value)} required /></label><label>External payment confirmation reference<input value={paymentReference} onChange={(e)=>setPaymentReference(e.target.value)} required /></label><label>Coverage start<input type="date" value={coverageStart} onChange={(e)=>setCoverageStart(e.target.value)} required /></label><label>Coverage end<input type="date" value={coverageEnd} onChange={(e)=>setCoverageEnd(e.target.value)} required /></label></div><div className="inline-note"><ShieldAlert size={15}/> Activate coverage only after independently verifying the insurer's issuance and an external payment confirmation reference. MotoSave does not contact the insurer or payment provider in this build.</div><button className="button button-primary" disabled={busyId===policy.id} type="submit">{busyId===policy.id?'Saving…':'Confirm policy record'}</button></form>}
       </article>)}</div>
     </section>}
 

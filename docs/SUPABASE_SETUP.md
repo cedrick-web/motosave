@@ -87,3 +87,13 @@ Do not run the bootstrap snippet with a UUID you have not verified. Use a separa
 - Create loan/insurance product drafts. Drafts are not visible to riders.
 - Publish a product only after checking official pricing, total repayment/fees or coverage terms/exclusions, eligibility, validity dates, and partner authority.
 - Product publishing is audited and requires a verified, published organization.
+
+
+## Financial operations and status notifications
+
+- Rider support replies use the `partner-operations` Edge Function. The function checks ticket ownership/assignment, rejects replies to resolved or closed tickets, inserts the message, updates ticket status, writes an audit event, and creates a notification. Direct authenticated INSERT on `support_messages` is intentionally not granted.
+- Lenders should record the repayment schedule from their approved/core-system schedule after the external disbursement is confirmed. The Edge Function validates dates and non-negative amounts, then checks that total principal, fees, and total repayment match the accepted offer before inserting installments.
+- A loan cannot be marked active by the partner workflow until at least one repayment installment has been recorded. This is a completeness gate, not a calculation engine.
+- Insurance quote acceptance creates only an `awaiting_payment` policy record. To record active coverage, an authorized insurer operator must independently verify policy issuance, enter the actual insurer policy/reference and coverage dates, and supply a separate external payment confirmation reference. MotoSave does not process the payment and the UI must not be described as proof of coverage.
+- Lender offer, application, insurer quote, claim, policy, document-review, support-ticket, and repayment-schedule state changes produce account notifications when the notification insert succeeds. A failed notification insert does not roll back a verified partner action; check the returned `notification_created` field and operational logs.
+- Do not connect demo/sample records to a real payment provider or insurer workflow. Keep official provider credentials server-side and complete provider-specific verification before any production integration.
