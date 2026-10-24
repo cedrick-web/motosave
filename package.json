@@ -1,0 +1,22 @@
+{
+  "name": "motosave-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MotoSave mobile and web platform for motorcycle taxi riders in Rwanda",
+  "workspaces": [
+    "apps/web",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @motosave/web",
+    "build:web": "npm run build --workspace @motosave/web",
+    "typecheck:web": "npm run typecheck --workspace @motosave/web",
+    "dev:mobile": "npm run start --workspace @motosave/mobile",
+    "typecheck:mobile": "npm run typecheck --workspace @motosave/mobile",
+    "typecheck": "npm run typecheck:web && npm run typecheck:mobile"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "npm@10.9.2"
+}
