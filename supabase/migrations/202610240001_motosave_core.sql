@@ -61,7 +61,7 @@ create table if not exists public.motorcycle_documents (
   owner_id uuid not null references public.profiles(id) on delete cascade,
   motorcycle_id uuid not null references public.motorcycles(id) on delete cascade,
   document_type text not null check (document_type in ('registration','insurance','inspection','ownership','other')),
-  storage_path text not null,
+  storage_path text not null check (split_part(storage_path, '/', 1) = owner_id::text),
   expires_on date,
   verification_status text not null default 'unverified' check (verification_status in ('unverified','pending_review','verified','rejected','expired')),
   created_at timestamptz not null default now()
@@ -435,7 +435,11 @@ create policy motorcycles_update_own on public.motorcycles for update to authent
 grant select on public.motorcycle_documents to authenticated;
 grant insert (owner_id, motorcycle_id, document_type, storage_path, expires_on) on public.motorcycle_documents to authenticated;
 create policy motorcycle_documents_select_own on public.motorcycle_documents for select to authenticated using (owner_id = (select auth.uid()));
-create policy motorcycle_documents_insert_own on public.motorcycle_documents for insert to authenticated with check (owner_id = (select auth.uid()) and exists (select 1 from public.motorcycles m where m.id = motorcycle_id and m.owner_id = (select auth.uid())));
+create policy motorcycle_documents_insert_own on public.motorcycle_documents for insert to authenticated with check (
+  owner_id = (select auth.uid())
+  and split_part(storage_path, '/', 1) = (select auth.uid())::text
+  and exists (select 1 from public.motorcycles m where m.id = motorcycle_id and m.owner_id = (select auth.uid()))
+);
 
 grant select on public.maintenance_records to authenticated;
 grant insert (owner_id, motorcycle_id, service_date, description, amount, odometer_km, next_service_date) on public.maintenance_records to authenticated;

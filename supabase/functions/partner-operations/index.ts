@@ -123,7 +123,7 @@ async function audit(
 
 async function loadQueue(admin: SupabaseClient, userId: string, role: string): Promise<Json> {
   if (role === "platform_admin") {
-    const [loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts] = await Promise.all([
+    const [loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts, motorcycleDocuments] = await Promise.all([
       admin.from("loan_applications").select("id,application_ref,user_id,product_id,purpose,requested_amount,term_months,status,submitted_at").order("created_at", { ascending: false }).limit(100),
       admin.from("insurance_claims").select("id,user_id,policy_id,incident_date,description,status,created_at").order("created_at", { ascending: false }).limit(100),
       admin.from("support_tickets").select("id,user_id,subject,category,description,status,priority,assigned_to,created_at").order("created_at", { ascending: false }).limit(100),
@@ -134,8 +134,9 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
       admin.from("profiles").select("id,full_name,phone,role,account_status,created_at").order("created_at", { ascending: false }).limit(200),
       admin.from("loan_products").select("id,partner_id,name,description,purpose,min_amount,max_amount,min_term_months,max_term_months,is_published").order("created_at", { ascending: false }).limit(200),
       admin.from("insurance_products").select("id,partner_id,name,description,coverage_type,supports_monthly_payments,is_published").order("created_at", { ascending: false }).limit(200),
+      admin.from("motorcycle_documents").select("id,owner_id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at").order("created_at", { ascending: false }).limit(200),
     ]);
-    if ([loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts].some((result) => result.error)) throw new Error("queue_load_failed");
+    if ([loanApps, claims, tickets, policies, quoteRequests, organizations, memberships, profiles, loanProducts, insuranceProducts, motorcycleDocuments].some((result) => result.error)) throw new Error("queue_load_failed");
     return {
       role,
       loan_applications: loanApps.data || [],
@@ -148,6 +149,7 @@ async function loadQueue(admin: SupabaseClient, userId: string, role: string): P
       profiles: profiles.data || [],
       loan_products: loanProducts.data || [],
       insurance_products: insuranceProducts.data || [],
+      motorcycle_documents: motorcycleDocuments.data || [],
     };
   }
 
@@ -254,6 +256,64 @@ Deno.serve(async (request: Request) => {
   const requestId = request.headers.get("x-request-id");
 
   try {
+    if (action === "review_motorcycle_document") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const documentId = textValue(body.document_id, 80);
+      const nextStatus = textValue(body.status, 40);
+      const allowedStatuses = new Set(["unverified", "pending_review", "verified", "rejected", "expired"]);
+      if (!documentId || !nextStatus || !allowedStatuses.has(nextStatus) || !validReason(body.reason)) {
+        return fail("document_status_and_audit_reason_required", 400, allowedOrigin);
+      }
+      const { data: document } = await admin.from("motorcycle_documents")
+        .select("id,owner_id,motorcycle_id,document_type,storage_path,expires_on,verification_status")
+        .eq("id", documentId).maybeSingle();
+      if (!document) return fail("motorcycle_document_not_found", 404, allowedOrigin);
+      const today = new Date().toISOString().slice(0, 10);
+      if (nextStatus === "verified" && document.expires_on && document.expires_on < today) {
+        return fail("expired_document_cannot_be_verified", 409, allowedOrigin);
+      }
+      if (nextStatus === "expired" && (!document.expires_on || document.expires_on >= today)) {
+        return fail("document_expiry_date_is_not_in_the_past", 409, allowedOrigin);
+      }
+      const { error } = await admin.from("motorcycle_documents").update({ verification_status: nextStatus }).eq("id", documentId);
+      if (error) return fail("motorcycle_document_review_failed", 500, allowedOrigin);
+      const notificationTitle = nextStatus === "verified" ? "Motorcycle document verified"
+        : nextStatus === "rejected" ? "Motorcycle document needs attention"
+        : nextStatus === "expired" ? "Motorcycle document expired" : "Motorcycle document status updated";
+      const notificationMessage = nextStatus === "verified"
+        ? "Your " + document.document_type.replaceAll("_", " ") + " document was verified."
+        : nextStatus === "rejected"
+        ? "Your " + document.document_type.replaceAll("_", " ") + " document was rejected. Review the document and contact support if needed."
+        : nextStatus === "expired"
+        ? "Your " + document.document_type.replaceAll("_", " ") + " document is marked expired."
+        : "Your " + document.document_type.replaceAll("_", " ") + " document status is now " + nextStatus.replaceAll("_", " ") + ".";
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: document.owner_id,
+        title: notificationTitle,
+        message: notificationMessage,
+        notification_type: "document_review",
+        action_path: "/(tabs)/motorcycles",
+      });
+      await audit(admin, userId, "review_motorcycle_document", "motorcycle_document", documentId, String(body.reason), null, requestId);
+      if (notificationError) return respond(200, { ok: true, document_id: documentId, status: nextStatus, notification_created: false }, allowedOrigin);
+      return respond(200, { ok: true, document_id: documentId, status: nextStatus, notification_created: true }, allowedOrigin);
+    }
+
+    if (action === "create_private_document_url") {
+      if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
+      const documentId = textValue(body.document_id, 80);
+      const accessReason = validReason(body.reason);
+      if (!documentId || !accessReason) return fail("document_id_and_access_reason_required", 400, allowedOrigin);
+      const { data: document } = await admin.from("motorcycle_documents")
+        .select("id,owner_id,motorcycle_id,document_type,storage_path")
+        .eq("id", documentId).maybeSingle();
+      if (!document) return fail("motorcycle_document_not_found", 404, allowedOrigin);
+      const { data: signed, error } = await admin.storage.from("rider-documents").createSignedUrl(document.storage_path, 60);
+      if (error || !signed?.signedUrl) return fail("private_document_link_failed", 500, allowedOrigin);
+      await audit(admin, userId, "view_private_motorcycle_document", "motorcycle_document", documentId, accessReason, null, requestId);
+      return respond(200, { ok: true, signed_url: signed.signedUrl, expires_in_seconds: 60 }, allowedOrigin);
+    }
+
     if (action === "create_partner_organization") {
       if (role !== "platform_admin") return fail("platform_admin_required", 403, allowedOrigin);
       const legalName = textValue(body.legal_name, 200);

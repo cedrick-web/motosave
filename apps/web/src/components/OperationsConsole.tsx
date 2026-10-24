@@ -23,6 +23,7 @@ type PartnerMembership = { id: string; user_id: string; organization_id: string;
 type AdminProfile = { id: string; full_name: string; phone: string | null; role: string; account_status: string; created_at: string };
 type AdminLoanProduct = { id: string; partner_id: string; name: string; description: string | null; purpose: string; min_amount: number | null; max_amount: number | null; min_term_months: number | null; max_term_months: number | null; is_published: boolean };
 type AdminInsuranceProduct = { id: string; partner_id: string; name: string; description: string | null; coverage_type: string; supports_monthly_payments: boolean; is_published: boolean };
+type AdminMotorcycleDocument = { id: string; owner_id: string; motorcycle_id: string; document_type: string; storage_path: string; expires_on: string | null; verification_status: string; created_at: string };
 type Queue = {
   role: string;
   loan_applications?: LoanApplication[];
@@ -35,6 +36,7 @@ type Queue = {
   profiles?: AdminProfile[];
   loan_products?: AdminLoanProduct[];
   insurance_products?: AdminInsuranceProduct[];
+  motorcycle_documents?: AdminMotorcycleDocument[];
 };
 
 const fmt = (value: number) => new Intl.NumberFormat('en-RW', { style: 'currency', currency: 'RWF', maximumFractionDigits: 0 }).format(Number(value) || 0);
@@ -305,9 +307,11 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason, onReas
   const [error, setError] = useState('');
 
   const organizations = queue.partner_organizations || [];
-  const profiles = (queue.profiles || []).filter((profile) => profile.account_status === 'active');
+  const allProfiles = queue.profiles || [];
+  const profiles = allProfiles.filter((profile) => profile.account_status === 'active');
   const loanProducts = queue.loan_products || [];
   const insuranceProducts = queue.insurance_products || [];
+  const motorcycleDocuments = queue.motorcycle_documents || [];
   const selectedOrganization = organizations.find((org) => org.id === memberOrganizationId);
   const memberRoles = selectedOrganization?.partner_type === 'lender' ? ['lender_officer']
     : selectedOrganization?.partner_type === 'insurer' ? ['insurer_officer']
@@ -362,6 +366,25 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason, onReas
     try {
       await runOperation('assign_internal_role', { user_id: internalUserId, role: internalRole }, 'Internal support/audit role updated.');
     } finally { setAssigningRole(false); }
+  }
+
+  async function openPrivateDocument(document: AdminMotorcycleDocument) {
+    if (reason.trim().length < 5) { setError('Enter the audit note above before opening a private rider document.'); return; }
+    const popup = window.open('about:blank', '_blank');
+    if (!popup) { setError('Allow pop-ups for this site, then open the private document again.'); return; }
+    popup.opener = null;
+    setError('');
+    try {
+      const result = await invoke({ action: 'create_private_document_url', document_id: document.id, reason: reason.trim() });
+      const signedUrl = typeof result.signed_url === 'string' ? result.signed_url : '';
+      if (!signedUrl.startsWith('https://')) throw new Error('The server did not return a valid private document link.');
+      onReasonUsed();
+      popup.location.href = signedUrl;
+      onNotify('Private document link created. It expires after 60 seconds; the access is audit logged.');
+    } catch (err) {
+      popup.close();
+      setError(err instanceof Error ? err.message : 'The document could not be opened.');
+    }
   }
 
   async function createProduct(event: FormEvent) {
@@ -435,6 +458,17 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason, onReas
         <button className="button button-secondary" type="submit" disabled={assigningRole}>{assigningRole?'Saving…':'Assign internal role'}</button>
       </form>
       <p className="small muted">Platform-admin assignment is intentionally not offered here. Bootstrap or rotate platform admins through a reviewed, out-of-band SQL procedure.</p>
+    </section>
+
+    <section className="panel admin-panel">
+      <div className="panel-heading"><div><h3><FileCheck2 size={17}/> Motorcycle document review <span className="count-pill">{motorcycleDocuments.filter((item)=>item.verification_status==='unverified'||item.verification_status==='pending_review').length} pending</span></h3><p>Private links are temporary and every staff access is audit logged. Verify only after reviewing the actual document.</p></div></div>
+      <div className="admin-record-list">{motorcycleDocuments.map((document)=> {
+        const ownerName = allProfiles.find((profile)=>profile.id===document.owner_id)?.full_name || document.owner_id.slice(0,8)+'…';
+        const isPast = Boolean(document.expires_on && document.expires_on < new Date().toISOString().slice(0,10));
+        return <article className="admin-record" key={document.id}><div className="admin-record-main"><b>{document.document_type.replaceAll('_',' ')} · {ownerName}</b><span>Motorcycle {document.motorcycle_id.slice(0,8)}… · {document.expires_on ? 'Expires '+fmtDate(document.expires_on) : 'No expiry date'}</span><small>{document.verification_status.replaceAll('_',' ')} · Uploaded {fmtDate(document.created_at)}</small></div><div className="admin-record-actions"><button className="button button-secondary" onClick={()=>void openPrivateDocument(document)}>Open private file</button>{document.verification_status!=='verified'&&!isPast&&<button className="button button-primary" onClick={()=>void runOperation('review_motorcycle_document',{document_id:document.id,status:'verified'},'Document marked verified; the rider was notified.')}>Verify</button>}{document.verification_status!=='rejected'&&<button className="button button-quiet" onClick={()=>void runOperation('review_motorcycle_document',{document_id:document.id,status:'rejected'},'Document rejected; the rider was notified.')}>Reject</button>}{isPast&&document.verification_status!=='expired'&&<button className="button button-secondary" onClick={()=>void runOperation('review_motorcycle_document',{document_id:document.id,status:'expired'},'Document marked expired; the rider was notified.')}>Mark expired</button>}{document.verification_status==='unverified'&&<button className="button button-secondary" onClick={()=>void runOperation('review_motorcycle_document',{document_id:document.id,status:'pending_review'},'Document placed in review queue.')}>Pending review</button>}</div></article>;
+      })}
+      {!motorcycleDocuments.length&&<div className="compact-empty">No motorcycle documents have been uploaded yet.</div>}
+      </div>
     </section>
 
     <section className="panel admin-panel">
