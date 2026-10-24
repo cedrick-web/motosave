@@ -1,9 +1,9 @@
 import { FormEvent, useCallback, useEffect, useState } from 'react';
-import { AlertCircle, ArrowRight, BadgeCheck, BriefcaseBusiness, CheckCircle2, Clock3, FileCheck2, HandCoins, LifeBuoy, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ArrowRight, BadgeCheck, BriefcaseBusiness, Clock3, FileCheck2, HandCoins, LifeBuoy, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 type LoanApplication = {
-  id: string; application_ref: string; purpose: string; requested_amount: number; term_months: number;
+  id: string; application_ref: string; user_id: string; purpose: string; requested_amount: number; term_months: number;
   status: string; submitted_at?: string; created_at?: string;
 };
 type InsuranceClaim = {
