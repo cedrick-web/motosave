@@ -269,7 +269,6 @@ const styles = StyleSheet.create({
   formCard: { borderRadius: 17, borderWidth: 1, borderColor: '#E6ECF5', backgroundColor: '#FFF', padding: 16, marginBottom: 24 },
   formHint: { color: '#8996AB', fontSize: 10, lineHeight: 15, marginBottom: 12 },
   formTitle: { color: '#273A57', fontSize: 14, fontWeight: '800', marginBottom: 13 },
-  formHint: { color: '#8996AB', fontSize: 10, lineHeight: 15, marginBottom: 12 },
   input: { minHeight: 44, borderWidth: 1, borderColor: '#DFE7F2', borderRadius: 10, paddingHorizontal: 12, color: '#283A56', backgroundColor: '#FBFCFE', fontSize: 11, marginBottom: 11 },
   serviceDescription: { minHeight: 85, paddingTop: 11, textAlignVertical: 'top' },
   row: { flexDirection: 'row', gap: 9 }, flexInput: { flex: 1, minWidth: 0 },
