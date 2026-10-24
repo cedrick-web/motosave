@@ -36,7 +36,6 @@ export default function SupportScreen() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { void loadMessages(selectedTicketId); }, [loadMessages, selectedTicketId]);
 
   const loadMessages = useCallback(async (ticketId: string) => {
     if (!ticketId || !isSupabaseConfigured) { setTicketMessages([]); return; }
@@ -51,6 +50,8 @@ export default function SupportScreen() {
       Alert.alert('Could not load conversation', error instanceof Error ? error.message : 'Please try again.');
     } finally { setLoadingMessages(false); }
   }, []);
+
+  useEffect(() => { void loadMessages(selectedTicketId); }, [loadMessages, selectedTicketId]);
 
   async function sendReply() {
     const body = replyText.trim();
@@ -127,6 +128,8 @@ const styles = StyleSheet.create({
   subtitle:{color:'#D4E2F8',fontSize:11,lineHeight:17},
   formCard:{padding:15,borderRadius:16,backgroundColor:'#fff',borderWidth:1,borderColor:'#E6ECF5',marginBottom:24},
   formTitle:{color:'#273A57',fontSize:14,fontWeight:'800',marginBottom:14},
+  formHint:{color:'#8996AB',fontSize:10,lineHeight:15,marginBottom:12},
+  footerNote:{color:'#9AA5B6',fontSize:9,lineHeight:15,marginTop:14},
   label:{color:'#65758F',fontSize:10,fontWeight:'800',marginBottom:8},
   chips:{flexDirection:'row',flexWrap:'wrap',gap:7,marginBottom:13},
   chip:{borderWidth:1,borderColor:'#E0E8F4',borderRadius:8,paddingHorizontal:10,paddingVertical:8,backgroundColor:'#fff'},
