@@ -97,3 +97,15 @@ Do not run the bootstrap snippet with a UUID you have not verified. Use a separa
 - Insurance quote acceptance creates only an `awaiting_payment` policy record. To record active coverage, an authorized insurer operator must independently verify policy issuance, enter the actual insurer policy/reference and coverage dates, and supply a separate external payment confirmation reference. MotoSave does not process the payment and the UI must not be described as proof of coverage.
 - Lender offer, application, insurer quote, claim, policy, document-review, support-ticket, and repayment-schedule state changes produce account notifications when the notification insert succeeds. A failed notification insert does not roll back a verified partner action; check the returned `notification_created` field and operational logs.
 - Do not connect demo/sample records to a real payment provider or insurer workflow. Keep official provider credentials server-side and complete provider-specific verification before any production integration.
+
+
+## Netlify frontend configuration
+
+The repository includes `netlify.toml` for the Vite frontend. Configure these site environment variables in the new MotoSave Netlify site before deploying:
+
+- `VITE_SUPABASE_URL`: URL of the dedicated MotoSave Supabase project.
+- `VITE_SUPABASE_PUBLISHABLE_KEY`: that project’s publishable key. This is intentionally public and must be protected by RLS; do not use a service-role or secret key here.
+
+Build command: `npm run build:web`. Publish directory: `apps/web/dist`. The SPA fallback is configured for Vite. Set the Edge Function secret `MOTOSAVE_ALLOWED_ORIGIN` to the exact production origin, for example `https://your-motosave-domain.example`, before using partner operations.
+
+Do not deploy the frontend as a claimed live financial service until the matching MotoSave database migration and Edge Functions are deployed to the same dedicated Supabase project and partner/provider workflows are verified. The existing Murama school site/project is unrelated and must not be reused for MotoSave.

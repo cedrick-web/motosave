@@ -33,6 +33,24 @@ const policyStatuses = new Set([
   "pending", "quoted", "awaiting_payment", "active", "expired", "cancelled", "suspended", "claim_in_progress",
 ]);
 const ticketStatuses = new Set(["open", "assigned", "awaiting_user", "awaiting_partner", "resolved", "closed"]);
+const quoteStatusTransitions: Record<string, string[]> = {
+  submitted: ["under_review", "information_requested", "quote_available", "declined", "expired"],
+  under_review: ["information_requested", "quote_available", "declined", "expired"],
+  information_requested: ["under_review", "quote_available", "declined", "expired"],
+  quote_available: ["declined", "expired"],
+};
+const claimStatusTransitions: Record<string, string[]> = {
+  submitted: ["under_review", "information_requested", "rejected"],
+  under_review: ["information_requested", "accepted", "rejected"],
+  information_requested: ["under_review", "accepted", "rejected"],
+  accepted: ["settled", "closed"],
+};
+const supportTicketTransitions: Record<string, string[]> = {
+  open: ["assigned", "awaiting_user", "awaiting_partner", "resolved", "closed"],
+  assigned: ["assigned", "awaiting_user", "awaiting_partner", "resolved", "closed"],
+  awaiting_user: ["assigned", "awaiting_partner", "resolved", "closed"],
+  awaiting_partner: ["assigned", "awaiting_user", "resolved", "closed"],
+};
 
 function makeHeaders(allowedOrigin: string | undefined) {
   return {
@@ -444,6 +462,7 @@ Deno.serve(async (request: Request) => {
 
     if (action === "create_loan_product") {
       if (!actorCanUseRole(role, ["lender_officer"])) return fail("lender_access_required", 403, allowedOrigin);
+      if (!validReason(body.reason)) return fail("product_creation_reason_required", 400, allowedOrigin);
       const organizationId = textValue(body.partner_id, 80);
       const name = textValue(body.name, 120);
       const description = textValue(body.description, 1000);
@@ -475,6 +494,7 @@ Deno.serve(async (request: Request) => {
 
     if (action === "create_insurance_product") {
       if (!actorCanUseRole(role, ["insurer_officer"])) return fail("insurer_access_required", 403, allowedOrigin);
+      if (!validReason(body.reason)) return fail("product_creation_reason_required", 400, allowedOrigin);
       const organizationId = textValue(body.partner_id, 80);
       const name = textValue(body.name, 120);
       const coverageType = textValue(body.coverage_type, 100);
@@ -562,13 +582,14 @@ Deno.serve(async (request: Request) => {
       const nextStatus = textValue(body.status, 80);
       const validStatuses = new Set(["under_review", "information_requested", "quote_available", "declined", "expired"]);
       if (!quoteRequestId || !nextStatus || !validStatuses.has(nextStatus)) return fail("invalid_quote_request_or_status", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("quote_decision_reason_required", 400, allowedOrigin);
       if (["declined", "expired"].includes(nextStatus) && !validReason(body.reason)) return fail("decision_reason_required", 400, allowedOrigin);
       const { data: quoteRequest } = await admin.from("insurance_quote_requests")
         .select("id,user_id,product_id,status").eq("id", quoteRequestId).maybeSingle();
       if (!quoteRequest?.product_id) return fail("quote_request_not_routed_to_insurer", 404, allowedOrigin);
       const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", quoteRequest.product_id).maybeSingle();
       if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
-      if (["accepted", "declined", "expired", "cancelled"].includes(quoteRequest.status)) return fail("quote_request_is_terminal", 409, allowedOrigin);
+      if (!(quoteStatusTransitions[quoteRequest.status] || []).includes(nextStatus)) return fail("invalid_quote_status_transition", 409, allowedOrigin);
       const update: Json = { status: nextStatus, decision_reason: reason, updated_at: new Date().toISOString() };
       if (nextStatus === "quote_available") {
         const quotedPremium = positiveNumber(body.quoted_premium);
@@ -685,6 +706,7 @@ Deno.serve(async (request: Request) => {
       const applicationId = textValue(body.application_id, 80);
       const nextStatus = textValue(body.status, 80);
       if (!applicationId || !nextStatus || !loanStatuses.has(nextStatus)) return fail("invalid_application_or_status", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("audit_reason_required", 400, allowedOrigin);
       const { data: application, error } = await admin.from("loan_applications")
         .select("id,product_id,status").eq("id", applicationId).maybeSingle();
       if (error || !application) return fail("application_not_found", 404, allowedOrigin);
@@ -700,6 +722,12 @@ Deno.serve(async (request: Request) => {
         return fail("invalid_loan_status_transition", 409, allowedOrigin);
       }
       if (nextStatus === "rejected_by_lender" && !validReason(body.reason)) return fail("rejection_reason_required", 400, allowedOrigin);
+      if (nextStatus === "active") {
+        const { data: existingSchedule, error: scheduleError } = await admin.from("repayment_installments")
+          .select("id").eq("loan_application_id", applicationId).limit(1);
+        if (scheduleError) return fail("repayment_schedule_check_failed", 500, allowedOrigin);
+        if (!existingSchedule?.length) return fail("repayment_schedule_required_before_activation", 409, allowedOrigin);
+      }
       const update: Json = {
         status: nextStatus,
         decided_at: ["approved_by_lender", "rejected_by_lender"].includes(nextStatus) ? new Date().toISOString() : null,
@@ -719,8 +747,92 @@ Deno.serve(async (request: Request) => {
       return respond(200, { ok: true, application_id: applicationId, status: nextStatus }, allowedOrigin);
     }
 
+    if (action === "record_repayment_schedule") {
+      if (!actorCanUseRole(role, ["lender_officer"])) return fail("lender_access_required", 403, allowedOrigin);
+      const applicationId = textValue(body.application_id, 80);
+      const scheduleInput = body.installments;
+      if (!applicationId || !Array.isArray(scheduleInput) || scheduleInput.length < 1 || scheduleInput.length > 500) {
+        return fail("application_id_and_one_to_500_installments_required", 400, allowedOrigin);
+      }
+      if (!validReason(body.reason)) return fail("schedule_source_and_audit_reason_required", 400, allowedOrigin);
+      const { data: application, error: applicationError } = await admin.from("loan_applications")
+        .select("id,user_id,application_ref,product_id,status").eq("id", applicationId).maybeSingle();
+      if (applicationError || !application) return fail("application_not_found", 404, allowedOrigin);
+      if (!application.product_id) return fail("application_not_routed_to_lender", 409, allowedOrigin);
+      if (!["disbursed", "active"].includes(application.status)) return fail("schedule_requires_disbursed_loan", 409, allowedOrigin);
+      const { data: product } = await admin.from("loan_products").select("partner_id")
+        .eq("id", application.product_id).maybeSingle();
+      if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "lender", "lender_officer")) {
+        return fail("partner_scope_denied", 403, allowedOrigin);
+      }
+      const { data: offer, error: offerError } = await admin.from("loan_offers")
+        .select("id,partner_id,status,principal_amount,total_repayment,fees,term_months,payment_frequency")
+        .eq("application_id", applicationId).eq("status", "accepted")
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (offerError || !offer) return fail("accepted_lender_offer_required", 409, allowedOrigin);
+      if (offer.partner_id !== product.partner_id) return fail("offer_partner_mismatch", 409, allowedOrigin);
+      const { data: existing, error: existingError } = await admin.from("repayment_installments")
+        .select("id").eq("loan_application_id", applicationId).limit(1);
+      if (existingError) return fail("existing_schedule_check_failed", 500, allowedOrigin);
+      if (existing?.length) return fail("repayment_schedule_already_exists", 409, allowedOrigin);
+
+      const rows: Record<string, unknown>[] = [];
+      let principalSum = 0;
+      let feesSum = 0;
+      let totalSum = 0;
+      let lastDueDate = "";
+      const hasTwoDecimalPlaces = (value: number) => Math.abs(value * 100 - Math.round(value * 100)) < 0.00001;
+      for (let index = 0; index < scheduleInput.length; index++) {
+        const raw = scheduleInput[index];
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("invalid_installment_row", 400, allowedOrigin);
+        const row = raw as Record<string, unknown>;
+        const dueDate = row.due_date;
+        const principal = Number(row.principal_due);
+        const interest = Number(row.interest_due);
+        const fees = Number(row.fees_due);
+        if (!isDate(dueDate) || dueDate <= lastDueDate ||
+            row.principal_due === undefined || row.interest_due === undefined || row.fees_due === undefined ||
+            ![principal, interest, fees].every((value) => Number.isFinite(value) && value >= 0 && hasTwoDecimalPlaces(value)) ||
+            principal + interest + fees <= 0) {
+          return fail("invalid_installment_values_or_dates", 400, allowedOrigin);
+        }
+        lastDueDate = dueDate;
+        principalSum += principal;
+        feesSum += fees;
+        totalSum += principal + interest + fees;
+        rows.push({
+          loan_application_id: applicationId,
+          installment_number: index + 1,
+          due_date: dueDate,
+          principal_due: principal,
+          interest_due: interest,
+          fees_due: fees,
+          status: "scheduled",
+        });
+      }
+      const withinMoneyPrecision = (left: number, right: number) => Math.abs(left - right) <= 0.02;
+      if (!withinMoneyPrecision(principalSum, Number(offer.principal_amount)) ||
+          !withinMoneyPrecision(feesSum, Number(offer.fees)) ||
+          !withinMoneyPrecision(totalSum, Number(offer.total_repayment))) {
+        return fail("schedule_totals_do_not_match_accepted_offer", 409, allowedOrigin);
+      }
+      const { data: inserted, error: insertError } = await admin.from("repayment_installments")
+        .insert(rows).select("id,installment_number,due_date,total_due,status");
+      if (insertError || !inserted) return fail("repayment_schedule_insert_failed", 500, allowedOrigin);
+      await audit(admin, userId, "record_repayment_schedule", "loan_application", applicationId, String(body.reason), product.partner_id, requestId);
+      const { error: notificationError } = await admin.from("notifications").insert({
+        user_id: application.user_id,
+        title: "Repayment schedule available",
+        message: "The lender has recorded the official repayment schedule for financing request " + application.application_ref + ". Review dates and amounts in MotoSave.",
+        notification_type: "repayment_schedule",
+        action_path: "/financing",
+      });
+      return respond(201, { ok: true, application_id: applicationId, installment_count: inserted.length, schedule_total: totalSum, notification_created: !notificationError }, allowedOrigin);
+    }
+
     if (action === "create_loan_offer") {
       if (!actorCanUseRole(role, ["lender_officer"])) return fail("lender_access_required", 403, allowedOrigin);
+      if (!validReason(body.reason)) return fail("offer_reason_required", 400, allowedOrigin);
       const applicationId = textValue(body.application_id, 80);
       const principalAmount = positiveNumber(body.principal_amount);
       const requestedRate = Number(body.interest_rate);
@@ -736,7 +848,7 @@ Deno.serve(async (request: Request) => {
         return fail("invalid_offer_terms", 400, allowedOrigin);
       }
       if (totalRepayment < principalAmount || totalRepayment < principalAmount + fees) return fail("total_repayment_inconsistent", 400, allowedOrigin);
-      if (expiresAt && Number.isNaN(Date.parse(expiresAt))) return fail("invalid_expiry", 400, allowedOrigin);
+      if (expiresAt && (Number.isNaN(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now())) return fail("offer_expiry_must_be_in_the_future", 400, allowedOrigin);
       const { data: application, error } = await admin.from("loan_applications")
         .select("id,user_id,application_ref,product_id,status,requested_amount").eq("id", applicationId).maybeSingle();
       if (error || !application) return fail("application_not_found", 404, allowedOrigin);
@@ -775,6 +887,7 @@ Deno.serve(async (request: Request) => {
       const claimId = textValue(body.claim_id, 80);
       const nextStatus = textValue(body.status, 80);
       if (!claimId || !nextStatus || !claimStatuses.has(nextStatus)) return fail("invalid_claim_or_status", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("claim_decision_reason_required", 400, allowedOrigin);
       if (["rejected", "settled"].includes(nextStatus) && !validReason(body.reason)) return fail("decision_reason_required", 400, allowedOrigin);
       const { data: claim } = await admin.from("insurance_claims").select("id,user_id,policy_id,status").eq("id", claimId).maybeSingle();
       if (!claim) return fail("claim_not_found", 404, allowedOrigin);
@@ -782,7 +895,7 @@ Deno.serve(async (request: Request) => {
       if (!policy?.product_id) return fail("policy_not_routed_to_insurer", 409, allowedOrigin);
       const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", policy.product_id).maybeSingle();
       if (!product || !await authorizePartner(admin, userId, role, product.partner_id, "insurer", "insurer_officer")) return fail("partner_scope_denied", 403, allowedOrigin);
-      if (["settled", "closed", "rejected"].includes(claim.status)) return fail("claim_is_terminal", 409, allowedOrigin);
+      if (!(claimStatusTransitions[claim.status] || []).includes(nextStatus)) return fail("invalid_claim_status_transition", 409, allowedOrigin);
       const { error } = await admin.from("insurance_claims").update({ status: nextStatus, updated_at: new Date().toISOString() }).eq("id", claimId);
       if (error) return fail("claim_update_failed", 500, allowedOrigin);
       await audit(admin, userId, "update_claim_status", "insurance_claim", claimId, reason, product.partner_id, requestId);
@@ -801,6 +914,7 @@ Deno.serve(async (request: Request) => {
       const policyId = textValue(body.policy_id, 80);
       const nextStatus = textValue(body.status, 80);
       if (!policyId || !nextStatus || !policyStatuses.has(nextStatus)) return fail("invalid_policy_or_status", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("policy_status_reason_required", 400, allowedOrigin);
       const { data: policy } = await admin.from("insurance_policies").select("id,user_id,product_id,status,terms").eq("id", policyId).maybeSingle();
       if (!policy?.product_id) return fail("policy_not_found_or_not_routed", 404, allowedOrigin);
       const { data: product } = await admin.from("insurance_products").select("partner_id").eq("id", policy.product_id).maybeSingle();
@@ -909,9 +1023,10 @@ Deno.serve(async (request: Request) => {
       const ticketId = textValue(body.ticket_id, 80);
       const nextStatus = textValue(body.status || "assigned", 80);
       if (!ticketId || !nextStatus || !ticketStatuses.has(nextStatus)) return fail("invalid_ticket_or_status", 400, allowedOrigin);
+      if (!validReason(body.reason)) return fail("support_action_reason_required", 400, allowedOrigin);
       const { data: ticket } = await admin.from("support_tickets").select("id,user_id,subject,status,assigned_to").eq("id", ticketId).maybeSingle();
       if (!ticket) return fail("ticket_not_found", 404, allowedOrigin);
-      if (["resolved", "closed"].includes(ticket.status)) return fail("ticket_is_closed", 409, allowedOrigin);
+      if (!(supportTicketTransitions[ticket.status] || []).includes(nextStatus)) return fail("invalid_support_ticket_transition", 409, allowedOrigin);
       if (role === "support_agent" && ticket.assigned_to && ticket.assigned_to !== userId) return fail("ticket_assigned_to_another_agent", 403, allowedOrigin);
       const { error } = await admin.from("support_tickets").update({
         assigned_to: userId, status: nextStatus, updated_at: new Date().toISOString(),

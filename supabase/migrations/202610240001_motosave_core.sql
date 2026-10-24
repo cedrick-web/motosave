@@ -503,7 +503,19 @@ create policy insurance_premiums_select_own on public.insurance_premium_installm
 grant select on public.insurance_claims to authenticated;
 grant insert (user_id, policy_id, incident_date, description) on public.insurance_claims to authenticated;
 create policy insurance_claims_select_own on public.insurance_claims for select to authenticated using (user_id = (select auth.uid()));
-create policy insurance_claims_insert_own on public.insurance_claims for insert to authenticated with check (user_id = (select auth.uid()) and exists (select 1 from public.insurance_policies p where p.id = policy_id and p.user_id = (select auth.uid())));
+create policy insurance_claims_insert_own on public.insurance_claims for insert to authenticated with check (
+  user_id = (select auth.uid())
+  and exists (
+    select 1 from public.insurance_policies p
+    where p.id = policy_id
+      and p.user_id = (select auth.uid())
+      and p.coverage_start is not null
+      and p.coverage_end is not null
+      and incident_date between p.coverage_start and p.coverage_end
+      and incident_date <= current_date
+      and p.status in ('active', 'expired', 'claim_in_progress')
+  )
+);
 
 grant select on public.payment_transactions to authenticated;
 create policy payment_transactions_select_own on public.payment_transactions for select to authenticated using (user_id = (select auth.uid()));
