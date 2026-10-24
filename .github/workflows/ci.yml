@@ -33,3 +33,14 @@ jobs:
       - name: Verify Expo SDK package compatibility
         working-directory: apps/mobile
         run: npx expo install --check
+
+  edge-functions:
+    name: Edge Function typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno check supabase/functions/partner-operations/index.ts
+      - run: deno check supabase/functions/demo-payment/index.ts

@@ -11,3 +11,6 @@ enabled = false
 
 [functions.demo-payment]
 verify_jwt = true
+
+[functions.partner-operations]
+verify_jwt = true

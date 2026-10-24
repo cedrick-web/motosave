@@ -489,3 +489,48 @@ td small { display: block; color: #9aa5b6; font-size: 9px; }
 @media (max-width: 760px) {
   .document-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Partner operations console */
+.operations-hero { display:flex; align-items:center; gap:16px; padding:22px; border-radius:15px; background:linear-gradient(110deg,#153866,#286bc4); color:#fff; }
+.operations-hero-icon { display:grid; width:52px; height:52px; flex-shrink:0; place-items:center; border:1px solid #ffffff33; border-radius:15px; background:#ffffff18; color:#e1edff; }
+.operations-hero > div:nth-child(2) { flex:1; min-width:0; }
+.operations-hero h2 { margin:0 0 7px; color:#fff; font-size:21px; letter-spacing:-.04em; }
+.operations-hero p { margin:0; color:#d6e4fa; font-size:10px; line-height:1.6; }
+.operations-reason { display:grid; gap:7px; padding:15px; border:1px solid #e4eaf5; border-radius:12px; background:#fff; }
+.operations-reason label { color:#435777; font-size:10px; font-weight:800; }
+.operations-reason textarea { width:100%; padding:10px 11px; border:1px solid #dfe6f1; border-radius:9px; background:#fbfcfe; color:#2e405f; font:inherit; font-size:11px; line-height:1.5; resize:vertical; }
+.operations-reason small { color:#8b98ad; font-size:9px; line-height:1.5; }
+.operations-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.operation-metric { display:grid; gap:7px; min-width:0; padding:15px; border:1px solid #e7edf5; border-radius:12px; background:white; }
+.operation-metric span { color:#7f8ca2; font-size:9px; }
+.operation-metric b { overflow:hidden; color:#263854; font-size:17px; text-overflow:ellipsis; text-transform:capitalize; }
+.operation-metric small { color:#9ba6b6; font-size:8px; line-height:1.45; }
+.operations-panel .panel-heading h3 { display:flex; align-items:center; gap:8px; }
+.operations-list { display:grid; gap:11px; }
+.operation-card { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:12px; padding:15px; border:1px solid #e8edf5; border-radius:12px; background:#fff; }
+.operation-card-main { display:grid; min-width:0; gap:6px; }
+.operation-card-main b { color:#30415d; font-size:11px; line-height:1.5; }
+.operation-card-main > span { color:#6c7d96; font-size:10px; line-height:1.5; }
+.operation-card-main small { color:#98a4b5; font-size:9px; line-height:1.5; overflow-wrap:anywhere; }
+.operation-buttons { display:flex; flex-wrap:wrap; grid-column:1 / -1; gap:7px; padding-top:9px; border-top:1px solid #eef2f7; }
+.operation-buttons .button { min-height:33px; padding:0 10px; font-size:9px; box-shadow:none; }
+.offer-form { display:grid; grid-column:1 / -1; gap:14px; padding:15px; border:1px solid #dfe8f7; border-radius:11px; background:#f8faff; }
+.offer-form-title { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#2d4263; font-size:12px; }
+.offer-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+.offer-fields label { display:grid; gap:6px; color:#62738e; font-size:9px; font-weight:750; }
+.offer-fields input,.offer-fields select { width:100%; min-width:0; padding:9px; border:1px solid #dfe6f1; border-radius:8px; background:white; color:#31435f; font-size:10px; }
+.operations-panel .inline-note { margin-bottom:1px; }
+.loading-panel { display:flex; align-items:center; justify-content:center; gap:9px; color:#7b8aa0; font-size:11px; }
+.spin-icon { animation:motosave-spin 1.5s linear infinite; }
+.operations-footer { display:flex; align-items:center; gap:7px; padding:2px 3px 8px; line-height:1.5; }
+@keyframes motosave-spin { to { transform:rotate(360deg); } }
+@media (max-width:760px) {
+  .operations-hero { align-items:flex-start; flex-wrap:wrap; }
+  .operations-hero > div:nth-child(2) { min-width:calc(100% - 72px); }
+  .operations-hero > .button { width:100%; }
+  .operations-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .offer-fields { grid-template-columns:minmax(0,1fr); }
+  .operation-card { grid-template-columns:minmax(0,1fr); }
+  .operation-card > .status-pill { grid-row:2; }
+  .operation-buttons { grid-column:auto; }
+}

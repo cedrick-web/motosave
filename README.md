@@ -7,11 +7,13 @@ MotoSave is a mobile-first financial wellbeing platform for motorcycle taxi ride
 ## Current implementation scope
 
 - Responsive React + TypeScript web workspace for dashboard, savings goals, motorcycle records, financing applications, insurance quote requests, activity, support, and settings.
-- Expo React Native application with Supabase authentication and shared-backend screens for dashboard, savings, financing, and insurance.
+- Expo React Native application with Supabase authentication and shared-backend screens for dashboard, savings goals and contribution history, motorcycles and maintenance logs, private document upload, financing applications, insurance quotes and claims, profile settings, notifications, and support tickets.
+- Partner operations console backed by a role-checked Edge Function for lender queues/offers, insurer claim/policy workflow, and support-ticket assignment. Operational changes are audit logged and require an authorized role.
 - Supabase PostgreSQL migration with profiles, motorcycles, savings goals and manual entries, loan applications/offers/installments, insurance products/quotes/policies/premiums/claims, notifications, partner records, support, audit records, and private document storage policies.
 - Row Level Security (RLS) and restrictive column grants for user-editable fields.
 - Explicit demo mode when Supabase client variables are absent. Demo data is fictional and stored locally in the browser; it is not real money, a bank balance, a loan offer, a payment, or insurance coverage.
 - A sandbox-only payment Edge Function that is disabled by default.
+- A partner operations Edge Function that uses service-role access only after checking the authenticated user's profile role, active partner membership, partner type, and verified organization status.
 
 ## Important: backend connection is not included
 
@@ -74,7 +76,7 @@ Savings goals and manually entered contributions are planning records. They are 
 - apps/web: responsive browser app.
 - apps/mobile: Expo React Native app.
 - supabase/migrations: database schema, RLS, grants, triggers, and storage policies.
-- supabase/functions: Edge Functions, including a disabled-by-default demo payment flow.
+- supabase/functions: partner operations and a disabled-by-default demo payment flow.
 - docs: architecture, typography licensing, and go-live checks.
 
 See docs/GO_LIVE_CHECKLIST.md before handling any real personal or financial data.

@@ -1,13 +1,14 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  Activity, AlertCircle, ArrowDownRight, ArrowRight, BadgeCheck, Bell, Bike, CalendarDays,
+  Activity, AlertCircle, ArrowDownRight, ArrowRight, BadgeCheck, Bell, Bike, BriefcaseBusiness, CalendarDays,
   CheckCircle2, ChevronDown, CircleHelp, Clock3, CreditCard, FileCheck2, FileText, HandCoins,
   Home, Languages, LifeBuoy, LogOut, Menu, MoreHorizontal, Plus, Search, Settings, ShieldCheck,
   Sparkles, TrendingUp, Wallet, Wrench, X, Zap, Receipt, ShieldAlert
 } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from 'recharts';
 import AuthScreen from './components/AuthScreen';
+import OperationsConsole from './components/OperationsConsole';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { calculateGoalProgress } from './lib/finance';
 import {
@@ -15,7 +16,7 @@ import {
   type Goal, type LoanApplication, type Motorcycle, type Policy, type Premium, type SavingsTransaction
 } from './lib/demo-store';
 
-type NavId = 'overview' | 'savings' | 'financing' | 'insurance' | 'motorcycles' | 'activity' | 'support' | 'settings';
+type NavId = 'overview' | 'savings' | 'financing' | 'insurance' | 'motorcycles' | 'activity' | 'operations' | 'support' | 'settings';
 type ModalId = 'goal' | 'contribution' | 'loan' | 'motorcycle' | 'quote' | 'maintenance' | 'claim' | null;
 const navItems: { id: NavId; label: string; icon: typeof Home; section: string }[] = [
   { id: 'overview', label: 'Overview', icon: Home, section: 'WORKSPACE' },
@@ -24,6 +25,7 @@ const navItems: { id: NavId; label: string; icon: typeof Home; section: string }
   { id: 'insurance', label: 'Insurance', icon: ShieldCheck, section: 'WORKSPACE' },
   { id: 'motorcycles', label: 'My motorcycles', icon: Bike, section: 'MANAGE' },
   { id: 'activity', label: 'Activity', icon: Activity, section: 'MANAGE' },
+  { id: 'operations', label: 'Partner operations', icon: BriefcaseBusiness, section: 'MANAGE' },
   { id: 'support', label: 'Help & support', icon: LifeBuoy, section: 'OTHER' },
   { id: 'settings', label: 'Settings', icon: Settings, section: 'OTHER' },
 ];
@@ -45,6 +47,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [profileName, setProfileName] = useState('MotoSave rider');
   const [profileRole, setProfileRole] = useState('Rider account');
+  const [accountRole, setAccountRole] = useState('rider');
   const [demoWorkspace] = useState(!isSupabaseConfigured);
   const [sessionReady, setSessionReady] = useState(!isSupabaseConfigured);
   const [session, setSession] = useState<{ user: { id: string; email?: string; user_metadata?: Record<string, unknown> } } | null>(null);
@@ -96,6 +99,7 @@ export default function App() {
     ]);
     if (profileResult.data) {
       setProfileName(profileResult.data.full_name || 'MotoSave rider');
+      setAccountRole(String(profileResult.data.role || 'rider'));
       setProfileRole(String(profileResult.data.role || 'rider').replaceAll('_', ' '));
     }
     if (goalResult.data) setGoals(goalResult.data as Goal[]);
@@ -321,7 +325,7 @@ export default function App() {
       <nav className="side-nav">
         {(['WORKSPACE', 'MANAGE', 'OTHER'] as const).map((section) => <div className="nav-section" key={section}>
           <span className="nav-section-title">{section}</span>
-          {navItems.filter((item) => item.section === section).map((item) => {
+          {navItems.filter((item) => item.section === section && (item.id !== 'operations' || ['cooperative_officer','lender_officer','insurer_officer','support_agent','platform_admin'].includes(accountRole))).map((item) => {
             const Icon = item.icon;
             return <button key={item.id} className={'nav-link ' + (activeNav === item.id ? 'active' : '')} onClick={() => { setActiveNav(item.id); document.body.classList.remove('nav-open'); }}><Icon size={18} strokeWidth={1.8} /><span>{item.label}</span>{item.id === 'financing' && loans.some((loan) => ['under_review', 'submitted', 'submitted_demo'].includes(loan.status)) && <span className="nav-dot" />}</button>;
           })}
@@ -357,6 +361,7 @@ export default function App() {
         {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} claims={insuranceClaims} onQuote={() => openModal('quote')} onClaim={() => openModal('claim')} onPayPremium={markPremiumPaid} />}
         {activeNav === 'motorcycles' && <MotorcyclesPage motorcycles={motorcycles} maintenanceRecords={maintenanceRecords} documents={motorcycleDocuments} demo={demoWorkspace} onAdd={() => openModal('motorcycle')} onMaintenance={() => openModal('maintenance')} onUploadDocument={uploadMotorcycleDocument} onOpenDocument={openMotorcycleDocument} />}
         {activeNav === 'activity' && <ActivityPage transactions={transactions} loans={loans} premiums={premiums} searchQuery={searchQuery} />}
+        {activeNav === 'operations' && <OperationsConsole demo={demoWorkspace} onNotify={notify} />}
         {activeNav === 'support' && <SupportPage demo={demoWorkspace} onToast={notify} />}
         {activeNav === 'settings' && <SettingsPage profileName={profileName} profileRole={profileRole} onSave={(name) => { setProfileName(name); notify('Name updated for this session.'); }} demo={demoWorkspace} />}
       </div>
@@ -373,7 +378,7 @@ function getSubtitle(nav: NavId) {
     overview: 'A clearer view of your money goals starts here.', savings: 'Small, consistent steps toward the things that matter.',
     financing: 'Track requests and understand financing terms clearly.', insurance: 'Keep policy records and upcoming premium dates in one place.',
     motorcycles: 'Organize the motorcycles and documents connected to your work.', activity: 'A timeline of recorded financial and account events.',
-    support: 'Find guidance or prepare a question for the support team.', settings: 'Manage your profile preferences and account information.',
+    operations: 'Review partner queues and record audited operational decisions.', support: 'Find guidance or prepare a question for the support team.', settings: 'Manage your profile preferences and account information.',
   };
   return values[nav];
 }
