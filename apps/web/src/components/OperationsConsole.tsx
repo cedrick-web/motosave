@@ -215,7 +215,7 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
     <div className="operations-reason"><label htmlFor="ops-reason">Audit note for the next action</label><textarea id="ops-reason" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Enter the factual reason for a status change, offer, claim decision, or support action." /><small>This note is required for each change. Use factual, concise language.</small></div>
     {error && <div className="alert alert-error"><AlertCircle size={15} /> {error}</div>}
     {loading && <div className="panel loading-panel"><RefreshCw size={18} className="spin-icon" /> Loading authorized queues…</div>}
-    {!loading && queue && queue.role === 'platform_admin' && <PartnerAdministration queue={queue} invoke={invoke} reload={load} onNotify={onNotify} reason={reason} />}
+    {!loading && queue && queue.role === 'platform_admin' && <PartnerAdministration queue={queue} invoke={invoke} reload={load} onNotify={onNotify} reason={reason} onReasonUsed={() => setReason('')} />}
     {!loading && queue && <div className="operations-summary">
       <div className="operation-metric"><span>Authorized role</span><b>{queue.role.replaceAll('_',' ')}</b><small>Resolved from your protected profile</small></div>
       <div className="operation-metric"><span>Loan requests</span><b>{queue.loan_applications?.length || 0}</b><small>Visible within your authorized scope</small></div>
@@ -250,17 +250,18 @@ export default function OperationsConsole({ demo, onNotify }: { demo: boolean; o
       <div className="operations-list">{queue.support_tickets.map((ticket) => <article className="operation-card" key={ticket.id}><div className="operation-card-main"><b>{ticket.subject}</b><span>{ticket.description}</span><small>{ticket.category} · {ticket.priority} · {fmtDate(ticket.created_at)} · Assigned {ticket.assigned_to ? ticket.assigned_to.slice(0,8)+'…' : 'nobody'}</small></div><span className={'status-pill ' + statusTone(ticket.status)}>{ticket.status.replaceAll('_',' ')}</span><div className="operation-buttons"><button className="button button-secondary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'assigned')}>Assign to me</button><button className="button button-primary" disabled={busyId===ticket.id} onClick={() => void updateStatus('assign_support_ticket','ticket_id',ticket.id,'resolved')}>Mark resolved</button></div></article>)}</div>
     </section>}
 
-    {!loading && queue && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.insurance_quote_requests?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
+    {!loading && queue && queue.role !== 'platform_admin' && !queue.loan_applications?.length && !queue.insurance_claims?.length && !queue.insurance_policies?.length && !queue.insurance_quote_requests?.length && !queue.support_tickets?.length && <div className="empty-card"><span className="empty-illustration"><BadgeCheck size={28}/></span><h3>Queue is clear</h3><p>No items currently match your authorized operational scope.</p></div>}
     <div className="small muted operations-footer"><Clock3 size={14}/> Every successful state change is written to the audit log. Server permissions remain authoritative even when this UI is modified.</div>
   </div>;
 }
 
-function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
+function PartnerAdministration({ queue, invoke, reload, onNotify, reason, onReasonUsed }: {
   queue: Queue;
   invoke: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
   reload: () => Promise<void>;
   onNotify: (message: string) => void;
   reason: string;
+  onReasonUsed: () => void;
 }) {
   const [legalName, setLegalName] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -304,6 +305,7 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
     setError('');
     try {
       await invoke({ action, ...payload, reason: reason.trim() });
+      onReasonUsed();
       onNotify(message);
       await reload();
     } catch (err) {
@@ -314,6 +316,7 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
   async function createOrganization(event: FormEvent) {
     event.preventDefault();
     if (legalName.trim().length < 2 || displayName.trim().length < 2) { setError('Enter the full legal name and public display name.'); return; }
+    if (reason.trim().length < 5) { setError('Enter a factual audit note above before creating an organization.'); return; }
     setCreatingOrganization(true); setError('');
     try {
       await invoke({
@@ -325,6 +328,7 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
         reason: reason.trim(),
       });
       setLegalName(''); setDisplayName(''); setPublicContact('');
+      onReasonUsed();
       onNotify('Partner organization created in pending-verification status.');
       await reload();
     } catch (err) {
@@ -376,6 +380,7 @@ function PartnerAdministration({ queue, invoke, reload, onNotify, reason }: {
         });
       }
       setProductName(''); setProductDescription('');
+      onReasonUsed();
       onNotify('Product created as an unpublished draft. A verified, published organization and platform-admin approval are required before riders can see it.');
       await reload();
     } catch (err) {

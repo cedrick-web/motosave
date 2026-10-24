@@ -289,7 +289,10 @@ Deno.serve(async (request: Request) => {
         const memberRole = String(membership.partner_role);
         const mappedType = partnerRoleOrganizationType[memberRole];
         if (nextStatus === "verified" && mappedType === organization.partner_type) {
-          const { data: memberProfile } = await admin.from("profiles").select("account_status").eq("id", membership.user_id).maybeSingle();
+          const { data: memberProfile } = await admin.from("profiles").select("role,account_status").eq("id", membership.user_id).maybeSingle();
+          if (memberProfile?.role === "platform_admin") {
+            continue; // Never demote a platform administrator through partner-review side effects.
+          }
           if (memberProfile?.account_status === "active") {
             await admin.from("partner_memberships").update({ status: "active" }).eq("id", membership.id);
             await admin.from("profiles").update({ role: memberRole, updated_at: new Date().toISOString() }).eq("id", membership.user_id);
@@ -316,6 +319,7 @@ Deno.serve(async (request: Request) => {
       if (!validReason(body.reason)) return fail("internal_role_reason_required", 400, allowedOrigin);
       const { data: targetProfile } = await admin.from("profiles").select("id,role,account_status").eq("id", targetUserId).maybeSingle();
       if (!targetProfile || targetProfile.account_status !== "active") return fail("active_profile_required", 400, allowedOrigin);
+      if (targetProfile.role === "platform_admin") return fail("platform_admin_role_change_requires_out_of_band_review", 409, allowedOrigin);
       const { error } = await admin.from("profiles").update({ role: targetRole, updated_at: new Date().toISOString() }).eq("id", targetUserId);
       if (error) return fail("internal_role_assignment_failed", 500, allowedOrigin);
       await audit(admin, userId, "assign_internal_role", "profile", targetUserId, String(body.reason), null, requestId);
@@ -334,8 +338,9 @@ Deno.serve(async (request: Request) => {
       const { data: organization } = await admin.from("partner_organizations").select("id,partner_type,status").eq("id", organizationId).maybeSingle();
       if (!organization) return fail("partner_organization_not_found", 404, allowedOrigin);
       if (partnerRoleOrganizationType[memberRole] !== organization.partner_type) return fail("partner_role_does_not_match_organization_type", 400, allowedOrigin);
-      const { data: memberProfile } = await admin.from("profiles").select("id,account_status").eq("id", memberUserId).maybeSingle();
+      const { data: memberProfile } = await admin.from("profiles").select("id,role,account_status").eq("id", memberUserId).maybeSingle();
       if (!memberProfile || memberProfile.account_status !== "active") return fail("active_profile_required", 400, allowedOrigin);
+      if (memberProfile.role === "platform_admin") return fail("platform_admin_role_change_requires_out_of_band_review", 409, allowedOrigin);
       const active = organization.status === "verified";
       const { data: membership, error } = await admin.from("partner_memberships").upsert({
         user_id: memberUserId,
@@ -540,8 +545,18 @@ Deno.serve(async (request: Request) => {
             quote_expires_at: quoteRequest.quote_expires_at,
           },
         }).select("id,status,policy_number,coverage_start,coverage_end").single();
-        if (error || !newPolicy) return fail("pending_policy_create_failed", 500, allowedOrigin);
-        policy = newPolicy;
+        if (error?.code === "23505") {
+          // The unique quote_request_id index makes concurrent accept requests idempotent.
+          const { data: racedPolicy, error: lookupError } = await admin.from("insurance_policies")
+            .select("id,status,policy_number,coverage_start,coverage_end")
+            .eq("user_id", userId).contains("terms", { quote_request_id: quoteRequestId }).maybeSingle();
+          if (lookupError || !racedPolicy) return fail("pending_policy_create_conflict", 409, allowedOrigin);
+          policy = racedPolicy;
+        } else if (error || !newPolicy) {
+          return fail("pending_policy_create_failed", 500, allowedOrigin);
+        } else {
+          policy = newPolicy;
+        }
       }
       const { error: requestUpdateError } = await admin.from("insurance_quote_requests")
         .update({ status: "accepted", decision_reason: acceptedReason, updated_at: new Date().toISOString() })

@@ -223,6 +223,11 @@ create table if not exists public.insurance_policies (
   unique (product_id, policy_number)
 );
 
+-- Idempotency guard: one pending/issued policy can be created per accepted quote request.
+create unique index if not exists insurance_policies_quote_request_unique
+  on public.insurance_policies ((terms ->> 'quote_request_id'))
+  where terms ? 'quote_request_id';
+
 create table if not exists public.insurance_premium_installments (
   id uuid primary key default gen_random_uuid(),
   policy_id uuid not null references public.insurance_policies(id) on delete cascade,

@@ -402,7 +402,7 @@ export default function App() {
       <nav className="side-nav">
         {(['WORKSPACE', 'MANAGE', 'OTHER'] as const).map((section) => <div className="nav-section" key={section}>
           <span className="nav-section-title">{section}</span>
-          {navItems.filter((item) => item.section === section && (item.id !== 'operations' || ['cooperative_officer','lender_officer','insurer_officer','support_agent','platform_admin'].includes(accountRole))).map((item) => {
+          {navItems.filter((item) => item.section === section && (item.id !== 'operations' || ['lender_officer','insurer_officer','support_agent','platform_admin'].includes(accountRole))).map((item) => {
             const Icon = item.icon;
             return <button key={item.id} className={'nav-link ' + (activeNav === item.id ? 'active' : '')} onClick={() => { setActiveNav(item.id); document.body.classList.remove('nav-open'); }}><Icon size={18} strokeWidth={1.8} /><span>{item.label}</span>{item.id === 'financing' && loans.some((loan) => ['under_review', 'submitted', 'submitted_demo'].includes(loan.status)) && <span className="nav-dot" />}</button>;
           })}
