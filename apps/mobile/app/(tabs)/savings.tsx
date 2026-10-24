@@ -118,6 +118,7 @@ const styles = StyleSheet.create({
   subtitle: { color: '#8391A7', fontSize: 11, lineHeight: 17, marginTop: 7, marginBottom: 19 },
   formCard: { borderRadius: 17, borderWidth: 1, borderColor: '#E6ECF5', backgroundColor: '#FFF', padding: 16, marginBottom: 25 },
   formTitle: { color: '#273A57', fontSize: 14, fontWeight: '800', marginBottom: 13 },
+  formHint: { color: '#8996AB', fontSize: 10, lineHeight: 15, marginBottom: 12 },
   input: { height: 45, borderWidth: 1, borderColor: '#DFE7F2', borderRadius: 10, backgroundColor: '#FBFCFE', paddingHorizontal: 12, color: '#273A57', fontSize: 11, marginBottom: 11 },
   label: { color: '#65758F', fontSize: 10, fontWeight: '800', marginTop: 4, marginBottom: 8 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 12 },
