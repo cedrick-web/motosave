@@ -16,7 +16,7 @@ import {
   type Goal, type LoanApplication, type Motorcycle, type Policy, type Premium, type SavingsTransaction
 } from './lib/demo-store';
 
-type NavId = 'overview' | 'savings' | 'financing' | 'insurance' | 'motorcycles' | 'activity' | 'operations' | 'support' | 'settings';
+type NavId = 'overview' | 'savings' | 'financing' | 'insurance' | 'motorcycles' | 'activity' | 'notifications' | 'operations' | 'support' | 'settings';
 type ModalId = 'goal' | 'contribution' | 'loan' | 'motorcycle' | 'quote' | 'maintenance' | 'claim' | null;
 const navItems: { id: NavId; label: string; icon: typeof Home; section: string }[] = [
   { id: 'overview', label: 'Overview', icon: Home, section: 'WORKSPACE' },
@@ -25,6 +25,7 @@ const navItems: { id: NavId; label: string; icon: typeof Home; section: string }
   { id: 'insurance', label: 'Insurance', icon: ShieldCheck, section: 'WORKSPACE' },
   { id: 'motorcycles', label: 'My motorcycles', icon: Bike, section: 'MANAGE' },
   { id: 'activity', label: 'Activity', icon: Activity, section: 'MANAGE' },
+  { id: 'notifications', label: 'Notifications', icon: Bell, section: 'MANAGE' },
   { id: 'operations', label: 'Partner operations', icon: BriefcaseBusiness, section: 'MANAGE' },
   { id: 'support', label: 'Help & support', icon: LifeBuoy, section: 'OTHER' },
   { id: 'settings', label: 'Settings', icon: Settings, section: 'OTHER' },
@@ -41,6 +42,7 @@ type Installment = { id: string; loan_application_id: string; installment_number
 type InsuranceProduct = { id: string; name: string; description: string | null; coverage_type: string; supports_monthly_payments: boolean; terms: Record<string, unknown> };
 type QuoteRequest = { id: string; motorcycle_id: string | null; product_id: string | null; notes: string | null; status: string; quoted_premium: number | null; coverage_duration_months: number | null; quoted_terms: Record<string, unknown>; quote_expires_at: string | null; decision_reason: string | null; created_at: string };
 type MotorcycleDocument = { id: string; motorcycle_id: string; document_type: string; storage_path: string; expires_on: string | null; verification_status: string; created_at: string };
+type NotificationRecord = { id: string; title: string; message: string; is_read: boolean; created_at: string };
 type FormState = { title: string; purpose: string; target_amount: string; target_date: string; frequency: string; amount: string; note: string; motorcycle_id: string; registration_number: string; make: string; model: string; year: string; requested_amount: string; term_months: string; loan_purpose: string; loan_product_id: string; quote_product_id: string; quote_notes: string; service_date: string; service_description: string; service_amount: string; odometer_km: string; next_service_date: string; claim_policy_id: string; incident_date: string; incident_description: string };
 const emptyForm: FormState = { title: '', purpose: 'emergency', target_amount: '', target_date: '', frequency: 'weekly', amount: '', note: '', motorcycle_id: '', registration_number: '', make: '', model: '', year: '', requested_amount: '', term_months: '6', loan_purpose: 'motorcycle_maintenance', loan_product_id: '', quote_product_id: '', quote_notes: '', service_date: new Date().toISOString().slice(0, 10), service_description: '', service_amount: '', odometer_km: '', next_service_date: '', claim_policy_id: '', incident_date: new Date().toISOString().slice(0, 10), incident_description: '' };
 
@@ -51,6 +53,7 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [profileName, setProfileName] = useState('MotoSave rider');
+  const [profileLanguage, setProfileLanguage] = useState<'en' | 'rw'>('en');
   const [profileRole, setProfileRole] = useState('Rider account');
   const [accountRole, setAccountRole] = useState('rider');
   const [demoWorkspace] = useState(!isSupabaseConfigured);
@@ -70,7 +73,8 @@ export default function App() {
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [insuranceProducts, setInsuranceProducts] = useState<InsuranceProduct[]>([]);
   const [quoteRequests, setQuoteRequests] = useState<QuoteRequest[]>([]);
-  const [notificationsCount, setNotificationsCount] = useState(2);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [notificationsCount, setNotificationsCount] = useState(0);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -102,7 +106,7 @@ export default function App() {
       supabase.from('motorcycles').select('*').order('created_at', { ascending: false }),
       supabase.from('loan_applications').select('*').order('created_at', { ascending: false }),
       supabase.from('insurance_policies').select('id,policy_number,status,coverage_end,motorcycle_id').order('created_at', { ascending: false }),
-      supabase.from('notifications').select('id,is_read').eq('is_read', false).limit(50),
+      supabase.from('notifications').select('id,title,message,is_read,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('maintenance_records').select('id,motorcycle_id,service_date,description,amount,odometer_km,next_service_date,created_at').order('service_date', { ascending: false }).limit(100),
       supabase.from('insurance_claims').select('id,policy_id,incident_date,description,status,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('motorcycle_documents').select('id,motorcycle_id,document_type,storage_path,expires_on,verification_status,created_at').order('created_at', { ascending: false }).limit(100),
@@ -112,6 +116,7 @@ export default function App() {
     ]);
     if (profileResult.data) {
       setProfileName(profileResult.data.full_name || 'MotoSave rider');
+      setProfileLanguage(profileResult.data.preferred_language === 'rw' ? 'rw' : 'en');
       setAccountRole(String(profileResult.data.role || 'rider'));
       setProfileRole(String(profileResult.data.role || 'rider').replaceAll('_', ' '));
     }
@@ -126,7 +131,11 @@ export default function App() {
     if (loanProductsResult.data) setLoanProducts(loanProductsResult.data as LoanProduct[]);
     if (insuranceProductsResult.data) setInsuranceProducts(insuranceProductsResult.data as InsuranceProduct[]);
     if (quoteRequestsResult.data) setQuoteRequests(quoteRequestsResult.data as QuoteRequest[]);
-    if (notificationResult.data) setNotificationsCount(notificationResult.data.length);
+    if (notificationResult.data) {
+      const rows = notificationResult.data as NotificationRecord[];
+      setNotifications(rows);
+      setNotificationsCount(rows.filter((row) => !row.is_read).length);
+    }
     const policyIds = (policyResult.data || []).map((policy) => policy.id);
     if (policyIds.length) {
       const premiumResult = await supabase.from('insurance_premium_installments').select('id,policy_id,amount_due,due_date,status').in('policy_id', policyIds).order('due_date', { ascending: true });
@@ -380,6 +389,62 @@ export default function App() {
   }
 
   async function signOut() { if (supabase) { await supabase.auth.signOut(); setSession(null); } }
+  async function saveProfilePreferences(name: string, language: 'en' | 'rw') {
+    const cleanName = name.trim();
+    if (cleanName.length < 2) throw new Error('Enter a name with at least two characters.');
+    if (demoWorkspace) {
+      setProfileName(cleanName);
+      setProfileLanguage(language);
+      try { localStorage.setItem('motosave.profile', JSON.stringify({ full_name: cleanName, preferred_language: language })); } catch { /* local demo storage may be unavailable */ }
+      notify(language === 'rw'
+        ? 'Demo profile saved. Full Kinyarwanda interface translation is still in progress.'
+        : 'Demo profile preferences saved in this browser.');
+      return;
+    }
+    if (!supabase || !session) throw new Error('Your session expired. Sign in again.');
+    const { error } = await supabase.from('profiles')
+      .update({ full_name: cleanName, preferred_language: language })
+      .eq('id', session.user.id);
+    if (error) throw error;
+    setProfileName(cleanName);
+    setProfileLanguage(language);
+    notify(language === 'rw'
+      ? 'Profile saved. The Kinyarwanda preference is stored, but some screens are not translated yet.'
+      : 'Profile preferences saved to your account.');
+  }
+
+  async function markNotificationRead(notification: NotificationRecord) {
+    if (notification.is_read) return;
+    if (demoWorkspace) {
+      setNotifications((rows) => rows.map((row) => row.id === notification.id ? { ...row, is_read: true } : row));
+      setNotificationsCount((count) => Math.max(0, count - 1));
+      return;
+    }
+    if (!supabase || !session) { notify('Sign in again to update notifications.'); return; }
+    const { data, error } = await supabase.from('notifications').update({ is_read: true })
+      .eq('id', notification.id).eq('user_id', session.user.id).select('id').maybeSingle();
+    if (error || !data) { notify(error?.message || 'Notification could not be marked as read.'); return; }
+    setNotifications((rows) => rows.map((row) => row.id === notification.id ? { ...row, is_read: true } : row));
+    setNotificationsCount((count) => Math.max(0, count - 1));
+  }
+
+  async function markAllNotificationsRead() {
+    const unread = notifications.filter((row) => !row.is_read);
+    if (!unread.length) return;
+    if (demoWorkspace) {
+      setNotifications((rows) => rows.map((row) => ({ ...row, is_read: true })));
+      setNotificationsCount(0);
+      return;
+    }
+    if (!supabase || !session) { notify('Sign in again to update notifications.'); return; }
+    const { error } = await supabase.from('notifications').update({ is_read: true })
+      .eq('user_id', session.user.id).eq('is_read', false);
+    if (error) { notify(error.message); return; }
+    setNotifications((rows) => rows.map((row) => ({ ...row, is_read: true })));
+    setNotificationsCount(0);
+    notify('All notifications marked as read.');
+  }
+
   async function markPremiumPaid(premium: Premium) {
     if (isSupabaseConfigured) {
       notify('Real payments are not enabled. Use the insurer’s approved payment channel until a provider integration is configured.');
@@ -419,7 +484,7 @@ export default function App() {
         <div className="topbar-left"><button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => document.body.classList.toggle('nav-open')}><Menu size={20} /></button><div className="breadcrumb">Workspace <span>/</span> <b>{pageTitle}</b></div></div>
         <div className="topbar-actions">
           <label className="search-box"><Search size={17} /><input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search your workspace" aria-label="Search your workspace" /></label>
-          <button className="icon-button notification-button" aria-label="Notifications" onClick={() => { setActiveNav('activity'); setNotificationsCount(0); }}><Bell size={19} />{notificationsCount > 0 && <i />}</button>
+          <button className="icon-button notification-button" aria-label="Notifications" onClick={() => setActiveNav('notifications')}><Bell size={19} />{notificationsCount > 0 && <i />}</button>
           <button className="language-button" onClick={() => notify('Kinyarwanda interface translation needs review of financial terminology before enabling.')}><Languages size={16} /><span>EN</span><ChevronDown size={13} /></button>
           {supabase && <button className="icon-button" title="Sign out" aria-label="Sign out" onClick={signOut}><LogOut size={18} /></button>}
         </div>
@@ -438,9 +503,10 @@ export default function App() {
         {activeNav === 'insurance' && <InsurancePage policies={policies} premiums={premiums} motorcycles={motorcycles} claims={insuranceClaims} quoteRequests={quoteRequests} products={insuranceProducts} onQuote={() => openModal('quote')} onClaim={() => openModal('claim')} onAcceptQuote={acceptInsuranceQuote} onPayPremium={markPremiumPaid} />}
         {activeNav === 'motorcycles' && <MotorcyclesPage motorcycles={motorcycles} maintenanceRecords={maintenanceRecords} documents={motorcycleDocuments} demo={demoWorkspace} onAdd={() => openModal('motorcycle')} onMaintenance={() => openModal('maintenance')} onUploadDocument={uploadMotorcycleDocument} onOpenDocument={openMotorcycleDocument} />}
         {activeNav === 'activity' && <ActivityPage transactions={transactions} loans={loans} premiums={premiums} searchQuery={searchQuery} />}
+        {activeNav === 'notifications' && <NotificationsPage notifications={notifications} onMarkRead={markNotificationRead} onMarkAllRead={() => void markAllNotificationsRead()} />}
         {activeNav === 'operations' && <OperationsConsole demo={demoWorkspace} onNotify={notify} />}
         {activeNav === 'support' && <SupportPage demo={demoWorkspace} onToast={notify} />}
-        {activeNav === 'settings' && <SettingsPage profileName={profileName} profileRole={profileRole} onSave={(name) => { setProfileName(name); notify('Name updated for this session.'); }} demo={demoWorkspace} />}
+        {activeNav === 'settings' && <SettingsPage profileName={profileName} profileLanguage={profileLanguage} profileRole={profileRole} onSave={saveProfilePreferences} demo={demoWorkspace} />}
       </div>
       <footer className="footer"><span>© 2026 MotoSave</span><span><ShieldCheck size={14} /> Your records, treated with care</span><span>Built for Rwanda <span className="footer-dot">•</span> RWF</span></footer>
     </main>
@@ -454,7 +520,7 @@ function getSubtitle(nav: NavId) {
   const values: Record<NavId, string> = {
     overview: 'A clearer view of your money goals starts here.', savings: 'Small, consistent steps toward the things that matter.',
     financing: 'Track requests and understand financing terms clearly.', insurance: 'Keep policy records and upcoming premium dates in one place.',
-    motorcycles: 'Organize the motorcycles and documents connected to your work.', activity: 'A timeline of recorded financial and account events.',
+    motorcycles: 'Organize the motorcycles and documents connected to your work.', activity: 'A timeline of recorded financial and account events.', notifications: 'Read important updates about your account and requests.',
     operations: 'Review partner queues and record audited operational decisions.', support: 'Find guidance or prepare a question for the support team.', settings: 'Manage your profile preferences and account information.',
   };
   return values[nav];
@@ -640,6 +706,19 @@ function ActivityPage({ transactions, loans, premiums, searchQuery }: { transact
   return <div className="section-stack"><div className="info-callout"><Activity size={19} /><div><b>One timeline, clear origins</b><span>Manual records, partner-supplied states, and simulated events are labelled separately.</span></div></div><section className="panel table-panel"><div className="panel-heading"><div><h3>Activity history</h3><p>{rows.length} matching records</p></div><Clock3 size={19} className="subtle-icon" /></div><div className="table-scroll"><table><thead><tr><th>Record</th><th>Type</th><th>Date</th><th>Status</th><th className="right">Amount</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><b>{row.title}</b></td><td>{row.kind}</td><td>{fmtDate(row.date)}</td><td><span className={'status-pill ' + statusTone(row.status)}>{row.status.replaceAll('_', ' ')}</span></td><td className="right amount-cell">{fmt(row.amount)}</td></tr>)}</tbody></table></div>{!rows.length && <div className="compact-empty">No records match this search yet.</div>}</section></div>;
 }
 
+function NotificationsPage({ notifications, onMarkRead, onMarkAllRead }: { notifications: NotificationRecord[]; onMarkRead: (notification: NotificationRecord) => void; onMarkAllRead: () => void }) {
+  const unreadCount = notifications.filter((notification) => !notification.is_read).length;
+  return <div className="section-stack">
+    <div className="section-toolbar"><div><h3>Notifications <span className="count-pill">{unreadCount} unread</span></h3><p>Account and request updates delivered by MotoSave.</p></div><button className="button button-secondary" onClick={onMarkAllRead} disabled={!unreadCount}>Mark all as read</button></div>
+    {notifications.map((notification) => <article className={'notification-record ' + (notification.is_read ? 'read' : 'unread')} key={notification.id}>
+      <span className="notification-record-icon"><Bell size={17}/></span>
+      <div className="notification-record-body"><div className="notification-record-heading"><b>{notification.title}</b><time>{fmtDate(notification.created_at)}</time></div><p>{notification.message}</p><span className="notification-record-state">{notification.is_read ? 'Read' : 'Unread'}</span></div>
+      {!notification.is_read && <button className="button button-quiet" onClick={() => onMarkRead(notification)}>Mark read</button>}
+    </article>)}
+    {!notifications.length && <div className="empty-card"><span className="empty-illustration"><Bell size={28}/></span><h3>You’re all caught up</h3><p>New account and partner updates will appear here.</p></div>}
+  </div>;
+}
+
 function SupportPage({ demo, onToast }: { demo: boolean; onToast: (message: string) => void }) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -679,9 +758,18 @@ function SupportPage({ demo, onToast }: { demo: boolean; onToast: (message: stri
   return <div className="support-layout"><section className="support-welcome"><div className="support-icon-large"><LifeBuoy size={35} /></div><span className="eyebrow">WE'RE HERE TO HELP</span><h2>Good support should feel simple.</h2><p>Describe what happened without sharing passwords, payment PINs, or verification codes. The request will remain linked to your account.</p><div className="support-topic"><ShieldCheck size={18} /><div><b>Insurance questions</b><span>Coverage and claims decisions belong to your insurer.</span></div></div><div className="support-topic"><CreditCard size={18} /><div><b>Payment questions</b><span>Keep the provider reference and never share your PIN.</span></div></div></section><section className="panel support-form-panel"><h3>Contact support</h3><p className="muted">{demo ? 'Demo mode stores a fictional support draft in this browser only.' : 'Your request will be saved to your signed-in account.'}</p><form className="form-stack" onSubmit={submit}><label>Topic<select value={subject} onChange={(e) => setSubject(e.target.value)} required><option value="">Select a topic</option><option>Account access</option><option>Savings record</option><option>Loan application</option><option>Insurance policy</option><option>Payment question</option><option>Other</option></select></label><label>What happened?<textarea value={message} onChange={(e) => setMessage(e.target.value)} required minLength={10} maxLength={5000} rows={5} placeholder="Describe the problem without sharing credentials or PINs." /></label>{error && <div className="alert alert-error">{error}</div>}{sentReference && <div className="alert alert-success">Saved reference: {sentReference}</div>}<button className="button button-primary button-wide" disabled={sending} type="submit">{sending ? 'Submitting…' : 'Submit support request'} <ArrowRight size={16} /></button></form></section></div>;
 }
 
-function SettingsPage({ profileName, profileRole, onSave, demo }: { profileName: string; profileRole: string; onSave: (name: string) => void; demo: boolean }) {
+function SettingsPage({ profileName, profileLanguage, profileRole, onSave, demo }: { profileName: string; profileLanguage: 'en' | 'rw'; profileRole: string; onSave: (name: string, language: 'en' | 'rw') => Promise<void>; demo: boolean }) {
   const [name, setName] = useState(profileName);
-  return <div className="settings-layout"><section className="panel settings-panel"><div className="panel-heading"><div><h3>Profile and preferences</h3><p>Basic settings for your MotoSave workspace.</p></div><Settings size={18} className="subtle-icon" /></div><form className="form-stack" onSubmit={(e) => { e.preventDefault(); onSave(name.trim() || 'MotoSave rider'); }}><label>Full name<input value={name} onChange={(e) => setName(e.target.value)} required minLength={2} /></label><label>Account role<input value={profileRole} disabled /></label><label>Language<select defaultValue="en"><option value="en">English</option><option value="rw">Kinyarwanda (translation review required)</option></select></label><button className="button button-primary" type="submit">Save profile name</button></form></section><section className="panel settings-panel"><div className="panel-heading"><div><h3>Privacy & security</h3><p>Your financial information deserves careful handling.</p></div><ShieldCheck size={18} className="subtle-icon" /></div><div className="security-list"><ChecklistItem title="Account data scope" text="Connected records are protected by Supabase Row Level Security." /><ChecklistItem title="No client-side secrets" text="Only the project URL and publishable key belong in a public client." /><ChecklistItem title="Data exports and deletion" text="Production self-service export/deletion workflows require an approved operational process." /></div><span className={'status-pill ' + (demo ? 'warning' : 'success')}>{demo ? 'Local demo mode' : 'Connected to Supabase'}</span></section></div>;
+  const [language, setLanguage] = useState<'en' | 'rw'>(profileLanguage);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setSaving(true); setError('');
+    try { await onSave(name, language); }
+    catch (err) { setError(err instanceof Error ? err.message : 'Profile preferences could not be saved.'); }
+    finally { setSaving(false); }
+  }
+  return <div className="settings-layout"><section className="panel settings-panel"><div className="panel-heading"><div><h3>Profile and preferences</h3><p>Contact details and language preference attached to your account.</p></div><Settings size={18} className="subtle-icon" /></div><form className="form-stack" onSubmit={submit}><label>Full name<input value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={160} /></label><label>Account role<input value={profileRole} disabled /></label><label>Preferred language<select value={language} onChange={(e) => setLanguage(e.target.value === 'rw' ? 'rw' : 'en')}><option value="en">English</option><option value="rw">Kinyarwanda (interface translation in progress)</option></select></label><p className="small muted">Your language preference is saved to your account. Some screens remain in English while Kinyarwanda translation is completed.</p>{error && <div className="alert alert-error">{error}</div>}<button className="button button-primary" type="submit" disabled={saving}>{saving ? 'Saving preferences…' : 'Save profile preferences'}</button></form></section><section className="panel settings-panel"><div className="panel-heading"><div><h3>Privacy & security</h3><p>Your financial information deserves careful handling.</p></div><ShieldCheck size={18} className="subtle-icon" /></div><div className="security-list"><ChecklistItem title="Account data scope" text="Connected records are protected by Supabase Row Level Security." /><ChecklistItem title="No client-side secrets" text="Only the project URL and publishable key belong in a public client." /><ChecklistItem title="Data exports and deletion" text="Production self-service export/deletion workflows require an approved operational process." /></div><span className={'status-pill ' + (demo ? 'warning' : 'success')}>{demo ? 'Local demo mode' : 'Connected to Supabase'}</span></section></div>;
 }
 
 function EmptyCard({ title, description, action, onClick }: { title: string; description: string; action: string; onClick: () => void }) {

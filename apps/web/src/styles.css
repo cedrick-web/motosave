@@ -595,3 +595,22 @@ td small { display: block; color: #9aa5b6; font-size: 9px; }
   .admin-record { flex-direction:column; }
   .admin-record-actions { justify-content:flex-start; }
 }
+
+/* Live account notifications */
+.notification-record { display:flex; align-items:flex-start; gap:12px; padding:16px; border:1px solid #e7edf5; border-radius:13px; background:#fff; }
+.notification-record.unread { border-color:#cadcf9; background:#f7faff; }
+.notification-record-icon { display:grid; width:38px; height:38px; flex-shrink:0; place-items:center; border-radius:11px; background:#eaf1ff; color:#3475dd; }
+.notification-record-body { min-width:0; flex:1; }
+.notification-record-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.notification-record-heading b { color:#30425f; font-size:11px; line-height:1.5; }
+.notification-record-heading time { flex-shrink:0; color:#9aa5b6; font-size:9px; }
+.notification-record-body p { margin:7px 0 8px; color:#72829a; font-size:10px; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.notification-record-state { color:#8090a7; font-size:8px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }
+.notification-record.unread .notification-record-state { color:#2869df; }
+.notification-record > .button { align-self:center; flex-shrink:0; min-height:32px; padding:0 10px; font-size:9px; }
+@media (max-width:640px) {
+  .notification-record { flex-wrap:wrap; padding:12px; }
+  .notification-record-body { width:calc(100% - 52px); flex:1; }
+  .notification-record-heading { flex-direction:column; gap:4px; }
+  .notification-record > .button { margin-left:50px; }
+}
