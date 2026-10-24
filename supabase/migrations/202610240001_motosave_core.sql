@@ -180,6 +180,11 @@ create table if not exists public.repayment_installments (
   unique (loan_application_id, installment_number)
 );
 
+-- Each application can only have one row for each numbered installment.
+create unique index if not exists repayment_installments_application_number_unique
+  on public.repayment_installments (loan_application_id, installment_number);
+
+
 create table if not exists public.insurance_products (
   id uuid primary key default gen_random_uuid(),
   partner_id uuid not null references public.partner_organizations(id),
